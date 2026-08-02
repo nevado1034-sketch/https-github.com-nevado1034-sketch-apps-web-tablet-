@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Rules for repairs collection
+    match /repairs/{repairId} {
+      allow read, write: if true;
+    }
+  }
+}

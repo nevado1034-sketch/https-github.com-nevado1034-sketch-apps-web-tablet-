@@ -1,0 +1,80 @@
+{
+  "entities": {
+    "RepairItem": {
+      "title": "RepairItem",
+      "description": "Represents an electric vehicle repair log entry inside Litio Energy's system",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Sequential custom ID (e.g. LT-2026-0001)"
+        },
+        "receptionDate": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO date-time when vehicle was registered"
+        },
+        "client": {
+          "type": "object",
+          "description": "Client information containing name, phone, email, and ID"
+        },
+        "vehicle": {
+          "type": "object",
+          "description": "Vehicle specs and reported failure"
+        },
+        "accessories": {
+          "type": "object",
+          "description": "Checkbox state of accessories handed over by the client"
+        },
+        "visualState": {
+          "type": "object",
+          "description": "Checklist of scratches, cracks, brakes, lights, screen, tires, etc."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["receptioned", "diagnosing", "waiting_parts", "repairing", "testing", "ready", "delivered"],
+          "description": "Status of the repair in the workshop"
+        },
+        "aiDiagnostic": {
+          "type": "object",
+          "description": "AI-suggested diagnosis, causes, procedures, and estimated time"
+        },
+        "technicianNotes": {
+          "type": "string",
+          "description": "Continuous text update describing progress on the vehicle"
+        },
+        "estimatedCost": {
+          "type": "number",
+          "description": "Estimated cost in USD"
+        },
+        "actualCost": {
+          "type": "number",
+          "description": "Final cost in USD"
+        },
+        "historyLog": {
+          "type": "array",
+          "description": "Logs of status changes and historical operations"
+        }
+      },
+      "required": [
+        "id",
+        "receptionDate",
+        "client",
+        "vehicle",
+        "accessories",
+        "visualState",
+        "status",
+        "technicianNotes",
+        "estimatedCost",
+        "actualCost",
+        "historyLog"
+      ]
+    }
+  },
+  "firestore": {
+    "/repairs/{repairId}": {
+      "schema": "RepairItem",
+      "description": "Collection storing all active and historic vehicle repairs at the workshop"
+    }
+  }
+}

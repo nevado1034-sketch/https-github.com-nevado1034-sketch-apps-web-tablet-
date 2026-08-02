@@ -1,0 +1,6 @@
+{
+  "name": "Litio Energy",
+  "description": "Plataforma para taller de reparación de vehículos eléctricos con recepción desde tablet y panel de control para técnicos en tiempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
