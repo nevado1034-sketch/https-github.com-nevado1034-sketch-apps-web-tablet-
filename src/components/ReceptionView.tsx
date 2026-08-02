@@ -36,6 +36,7 @@ import {
 import { RepairItem, VehicleType, VisualState, Accessories, WorkshopBranch, ServiceType, PaymentMethod, PaymentInfo } from "../types";
 import { SignaturePad, PhotoManager } from "./TabletHelpers";
 import { generateRepairPdf } from "../utils/pdfGenerator";
+import { db, isFirebaseConfigured, collection, query, where, getDocs } from "../firebase";
 
 interface ReceptionViewProps {
   repairs: RepairItem[];
@@ -204,8 +205,8 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading }: Re
   };
 
   const handleSearchClientByDni = async (targetDni?: string, autoApply: boolean = true) => {
-    const query = (targetDni || clientDni).trim();
-    if (!query) {
+    const queryInput = (targetDni || clientDni).trim();
+    if (!queryInput) {
       alert("Por favor ingrese un número de DNI o RUC para buscar.");
       return;
     }
@@ -215,7 +216,50 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading }: Re
     setClientSearchStatus("idle");
 
     try {
-      const res = await fetch(`/api/clients/search?query=${encodeURIComponent(query)}`);
+      // 1) Buscar en Firestore la colección "clientes" (registrados desde la App Android)
+      let firestoreMatch: any | null = null;
+      if (isFirebaseConfigured && db) {
+        try {
+          const q = query(collection(db, "clientes"), where("dni", "==", queryInput));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const d = snap.docs[0].data() as any;
+            const appVehicleType = String(d.vehicleType || "").toLowerCase();
+            firestoreMatch = {
+              name: d.name || "",
+              dni: d.dni || queryInput,
+              phone: d.phone || "",
+              email: d.email || "",
+              vehicleBrand: d.vehicleBrand || "",
+              vehicleModel: d.vehicleModel || "",
+              vehicleType: d.vehicleType || "",
+              problemDescription: d.problemDescription || "",
+              source: "App Android Litio Energy",
+              vehicleTypeMap:
+                appVehicleType.includes("scooter") || appVehicleType.includes("patin")
+                  ? "scooter"
+                  : appVehicleType.includes("moto")
+                    ? "moto"
+                    : appVehicleType.includes("bici") || appVehicleType.includes("bicicl")
+                      ? "bici"
+                      : "otro"
+            };
+          }
+        } catch (e) {
+          console.error("Error buscando en Firestore:", e);
+        }
+      }
+
+      if (firestoreMatch) {
+        setFoundClientData(firestoreMatch);
+        setClientSearchStatus("found");
+        if (autoApply) {
+          handleApplyClientData(firestoreMatch);
+        }
+        return;
+      }
+
+      const res = await fetch(`/api/clients/search?query=${encodeURIComponent(queryInput)}`);
       let data = [];
       if (res.ok) {
         data = await res.json();
@@ -282,6 +326,11 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading }: Re
       if (selectedVehicle.brand) setBrand(selectedVehicle.brand);
       if (selectedVehicle.model) setModel(selectedVehicle.model);
       if (selectedVehicle.voltage) setVoltage(selectedVehicle.voltage);
+    } else if (clientData.vehicleTypeMap || clientData.vehicleBrand) {
+      if (clientData.vehicleTypeMap) setVehicleType(clientData.vehicleTypeMap as VehicleType);
+      if (clientData.vehicleBrand) setBrand(clientData.vehicleBrand);
+      if (clientData.vehicleModel) setModel(clientData.vehicleModel);
+      if (clientData.problemDescription) setReportedFailure(clientData.problemDescription);
     }
   };
 
@@ -670,6 +719,14 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading }: Re
                     <div className="text-xs text-slate-300 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-950/60 p-2.5 rounded-xl border border-slate-850">
                       <div>📞 Teléfono: <span className="text-white font-medium">{foundClientData.phone || "Sin teléfono"}</span></div>
                       <div>✉️ Email: <span className="text-white font-medium">{foundClientData.email || "Sin email"}</span></div>
+                      {(foundClientData.vehicleBrand || foundClientData.vehicleModel) && (
+                        <>
+                          <div>🔧 Vehículo: <span className="text-white font-medium">{foundClientData.vehicleType} {foundClientData.vehicleBrand} {foundClientData.vehicleModel}</span></div>
+                          {foundClientData.problemDescription && (
+                            <div>⚠️ Falla reportada: <span className="text-white font-medium">{foundClientData.problemDescription}</span></div>
+                          )}
+                        </>
+                      )}
                     </div>
 
                     {/* Botones de acción rápida */}
