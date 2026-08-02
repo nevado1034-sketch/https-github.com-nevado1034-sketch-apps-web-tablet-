@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Tablet, Monitor, BarChart3, RefreshCw, Sparkles, QrCode, X, Copy, Check, ExternalLink, Smartphone } from "lucide-react";
+import { Tablet, Monitor, BarChart3, MessageSquare, RefreshCw, Sparkles, QrCode, X, Copy, Check, ExternalLink, Smartphone } from "lucide-react";
 
 interface HeaderProps {
   currentTab: string;
@@ -106,6 +106,19 @@ export default function Header({ currentTab, setCurrentTab, isPolling, onRefresh
               >
                 <BarChart3 className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Estadísticas</span>
+              </button>
+
+              <button
+                id="nav-btn-chat"
+                onClick={() => setCurrentTab("chat")}
+                className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                  currentTab === "chat"
+                    ? "bg-cyan-500 text-slate-950 shadow-[0_0_15px_rgba(6,182,212,0.4)]"
+                    : "text-slate-400 hover:bg-slate-900 hover:text-slate-100"
+                }`}
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Chat Clientes</span>
               </button>
             </div>
 

@@ -11,7 +11,11 @@ import {
   onSnapshot, 
   query, 
   orderBy,
-  getDocFromServer
+  where,
+  getDocFromServer,
+  serverTimestamp,
+  limit,
+  Timestamp
 } from "firebase/firestore";
 
 const metaEnv = (import.meta as any).env || {};
@@ -67,5 +71,9 @@ export {
   addDoc,
   onSnapshot, 
   query, 
-  orderBy 
+  orderBy,
+  where,
+  serverTimestamp,
+  limit,
+  Timestamp
 };

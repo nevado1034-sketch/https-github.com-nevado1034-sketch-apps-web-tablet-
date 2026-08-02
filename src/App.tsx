@@ -3,6 +3,7 @@ import Header from "./components/Header";
 import ReceptionView from "./components/ReceptionView";
 import TechnicianView from "./components/TechnicianView";
 import DashboardView from "./components/DashboardView";
+import ChatView from "./components/ChatView";
 import { RepairItem, WorkshopStats } from "./types";
 import { AlertCircle } from "lucide-react";
 import { 
@@ -289,6 +290,10 @@ export default function App() {
               repairs={repairs}
               stats={stats}
             />
+          )}
+
+          {currentTab === "chat" && (
+            <ChatView />
           )}
         </main>
       )}

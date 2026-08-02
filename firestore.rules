@@ -5,5 +5,15 @@ service cloud.firestore {
     match /repairs/{repairId} {
       allow read, write: if true;
     }
+
+    // Clients registered from the Android app
+    match /clientes/{clientId} {
+      allow read, write: if true;
+    }
+
+    // Technical chat between client and workshop
+    match /chats/{phoneKey}/messages/{messageId} {
+      allow read, write: if true;
+    }
   }
 }
