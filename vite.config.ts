@@ -5,6 +5,7 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    base: '/https-github.com-nevado1034-sketch-apps-web-tablet-/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
