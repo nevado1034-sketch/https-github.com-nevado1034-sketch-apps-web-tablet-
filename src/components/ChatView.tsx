@@ -71,6 +71,14 @@ export default function ChatView() {
   const [error, setError] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Normaliza el teléfono igual que la App Android (FirestoreService)
+  const phoneKey = (phone: string): string => {
+    const key = (phone || "").trim().replace(/[^a-zA-Z0-9._-]/g, "_");
+    return key || "sin-telefono";
+  };
+
+  const messagesPath = (phone: string) => phoneKey(phone);
+
   // Load clients from Firestore (clientes collection, same as Android app)
   useEffect(() => {
     if (!isFirebaseConfigured || !db) {
@@ -101,7 +109,7 @@ export default function ChatView() {
         // Fetch last message and unread count for this client
         try {
           const msgsQuery = query(
-            collection(db, "chats", phone, "messages"),
+            collection(db, "chats", messagesPath(phone), "messages"),
             orderBy("timestamp", "desc")
           );
           const msgsSnap = await getDocs(msgsQuery);
@@ -138,7 +146,7 @@ export default function ChatView() {
       return;
     }
     const q = query(
-      collection(db, "chats", selectedPhone, "messages"),
+      collection(db, "chats", messagesPath(selectedPhone), "messages"),
       orderBy("timestamp", "asc")
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -168,7 +176,7 @@ export default function ChatView() {
     if (!text || !selectedPhone || sending) return;
     setSending(true);
     try {
-      const messagesCol = collection(db, "chats", selectedPhone, "messages");
+      const messagesCol = collection(db, "chats", messagesPath(selectedPhone), "messages");
       await addDoc(messagesCol, {
         senderRole: "TECHNICIAN",
         senderName: "Técnico Litio Energy",
