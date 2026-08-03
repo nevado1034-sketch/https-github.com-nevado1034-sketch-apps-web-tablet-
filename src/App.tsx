@@ -156,6 +156,47 @@ export default function App() {
         };
 
         await setDoc(doc(db, "repairs", seqId), repairItem);
+
+        // Sincronizar el cliente también en la colección "clientes" (mismo formato que la App Android)
+        try {
+          const branchToSede: Record<string, string> = {
+            lince_arenales: "Litio Lince",
+            surco: "Litio Surco",
+            san_borja: "Litio San Borja",
+            lince_leal: "Litio Lince"
+          };
+          const typeToLabel: Record<string, string> = {
+            scooter: "Scooter",
+            moto: "Moto",
+            bici: "Bicicleta",
+            otro: "Otros"
+          };
+          const phoneKey = (payload.client.phone || "").trim() ||
+            (payload.client.dni || "").trim() || `tablet-${Date.now()}`;
+          const clientDocId = phoneKey.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const clientData = {
+            name: payload.client.name || "",
+            phone: payload.client.phone || "",
+            dni: payload.client.dni || "",
+            email: payload.client.email || "",
+            vehicleType: typeToLabel[payload.vehicle.type] || "Scooter",
+            vehicleBrand: payload.vehicle.brand || "",
+            vehicleModel: payload.vehicle.model || "",
+            vehicleSerialNumber: "Otros",
+            problemDescription: payload.vehicle.reportedFailure || "Revisión general preventiva",
+            status: "Recibido",
+            progress: 10,
+            technicianNotes: "Vehículo registrado desde la tablet. Pendiente de ingreso a bahía de diagnóstico.",
+            estimatedCost: Number(payload.estimatedCost) || 0,
+            estimatedCompletionDate: "Pendiente de diagnóstico",
+            sede: branchToSede[payload.workshopBranch] || "Litio Surco",
+            createdAt: Date.now()
+          };
+          await setDoc(doc(db, "clientes", clientDocId), clientData);
+        } catch (clientErr) {
+          console.error("Error sincronizando cliente a Firestore:", clientErr);
+        }
+
         return repairItem;
       } else {
         const response = await fetch("/api/repairs", {
