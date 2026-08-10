@@ -42,6 +42,7 @@ interface ReceptionViewProps {
   repairs: RepairItem[];
   onCreateRepair: (newRepair: any) => Promise<RepairItem | undefined>;
   isLoading: boolean;
+  userBranch?: string;
 }
 
 const COMMON_BRANDS: Record<VehicleType, string[]> = {
@@ -54,15 +55,17 @@ const COMMON_BRANDS: Record<VehicleType, string[]> = {
 const VOLTAGES = ["24V", "36V", "48V", "52V", "60V", "72V", "84V", "96V", "No sabe"];
 
 const WORKSHOP_BRANCH_LABELS: Record<WorkshopBranch, string> = {
-  lince_arenales: "Sede Lince (Av. Arenales 2584)",
+  lince_arenales: "Sede San Isidro (Av. Arenales 2584)",
   surco: "Sede Surco (Av. Santiago de Surco 4352)",
   san_borja: "Sede San Borja (Av. Aviación 2410)",
   lince_leal: "Sede Lince (Av. Jose Leal 571)"
 };
 
-export default function ReceptionView({ repairs, onCreateRepair, isLoading }: ReceptionViewProps) {
-  // Branch state (Sede)
-  const [workshopBranch, setWorkshopBranch] = useState<WorkshopBranch>("lince_arenales");
+export default function ReceptionView({ repairs, onCreateRepair, isLoading, userBranch }: ReceptionViewProps) {
+  // Branch state (Sede) - locked to user's branch for local users
+  const [workshopBranch, setWorkshopBranch] = useState<WorkshopBranch>(
+    (userBranch as WorkshopBranch) || "lince_arenales"
+  );
 
   // Service Type state
   const [serviceType, setServiceType] = useState<ServiceType>("mantenimiento");
@@ -275,8 +278,8 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading }: Re
         }
       } else {
         const localMatch = repairs.find(
-          r => r.client?.dni?.toLowerCase().includes(query.toLowerCase()) ||
-               r.client?.name?.toLowerCase().includes(query.toLowerCase())
+          r => r.client?.dni?.toLowerCase().includes(queryInput.toLowerCase()) ||
+               r.client?.name?.toLowerCase().includes(queryInput.toLowerCase())
         );
         if (localMatch) {
           const clientRepairs = repairs.filter(r => r.client?.dni === localMatch.client?.dni);
@@ -574,9 +577,10 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading }: Re
                   <select
                     value={workshopBranch}
                     onChange={e => setWorkshopBranch(e.target.value as WorkshopBranch)}
-                    className="bg-transparent text-slate-200 text-xs font-bold focus:outline-none pr-2"
+                    disabled={!!userBranch}
+                    className="bg-transparent text-slate-200 text-xs font-bold focus:outline-none pr-2 disabled:opacity-70 disabled:cursor-not-allowed"
                   >
-                    <option value="lince_arenales" className="bg-slate-950 text-slate-100">Sede Arenales - Lince</option>
+                    <option value="lince_arenales" className="bg-slate-950 text-slate-100">Sede Arenales - San Isidro</option>
                     <option value="surco" className="bg-slate-950 text-slate-100">Sede Surco</option>
                     <option value="san_borja" className="bg-slate-950 text-slate-100">Sede San Borja</option>
                     <option value="lince_leal" className="bg-slate-950 text-slate-100">Sede Jose Leal - Lince</option>

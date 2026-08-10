@@ -3,7 +3,7 @@ import { RepairItem, RepairStatus } from "../types";
 export function generateRepairPdf(repair: RepairItem) {
   // Generate friendly names
   const branchNames: Record<string, string> = {
-    lince_arenales: "Arenales (Lince)",
+    lince_arenales: "San Isidro (Arenales)",
     surco: "Surco",
     san_borja: "San Borja",
     lince_leal: "José Leal (Lince)"

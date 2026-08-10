@@ -21,15 +21,16 @@ import { generateRepairPdf } from "../utils/pdfGenerator";
 interface DashboardViewProps {
   repairs: RepairItem[];
   stats: WorkshopStats;
+  userBranch?: string;
 }
 
-export default function DashboardView({ repairs, stats }: DashboardViewProps) {
+export default function DashboardView({ repairs, stats, userBranch }: DashboardViewProps) {
   // Delivered history state
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedBranch, setSelectedBranch] = useState("all");
+  const [selectedBranch, setSelectedBranch] = useState(userBranch || "all");
 
   const branchLabels: Record<string, string> = {
-    lince_arenales: "Arenales (Lince)",
+    lince_arenales: "San Isidro (Arenales)",
     surco: "Surco",
     san_borja: "San Borja",
     lince_leal: "José Leal (Lince)"
@@ -315,10 +316,11 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
             <select
               value={selectedBranch}
               onChange={(e) => setSelectedBranch(e.target.value)}
-              className="w-full px-3 py-2.5 bg-slate-950 text-xs text-slate-300 border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500 transition-colors"
+              disabled={!!userBranch}
+              className="w-full px-3 py-2.5 bg-slate-950 text-xs text-slate-300 border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500 transition-colors disabled:opacity-70 disabled:cursor-not-allowed"
             >
-              <option value="all">Todas las Sedes</option>
-              <option value="lince_arenales">Arenales (Lince)</option>
+              {!userBranch && <option value="all">Todas las Sedes</option>}
+              <option value="lince_arenales">San Isidro (Arenales)</option>
               <option value="surco">Surco</option>
               <option value="san_borja">San Borja</option>
               <option value="lince_leal">José Leal (Lince)</option>

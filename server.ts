@@ -431,17 +431,27 @@ app.get("/api/stats", (req, res) => {
   
   const stats = {
     total: repairs.length,
-    receptioned: repairs.filter((r) => r.status === "receptioned").length,
-    diagnosing: repairs.filter((r) => r.status === "diagnosing").length,
-    waiting_parts: repairs.filter((r) => r.status === "waiting_parts").length,
-    repairing: repairs.filter((r) => r.status === "repairing").length,
-    testing: repairs.filter((r) => r.status === "testing").length,
-    ready: repairs.filter((r) => r.status === "ready").length,
-    delivered: repairs.filter((r) => r.status === "delivered").length,
-    monthlyEarnings: repairs
-      .filter((r) => r.status === "delivered" || r.status === "ready")
-      .reduce((sum, r) => sum + (r.actualCost || r.estimatedCost || 0), 0)
+    receptioned: 0,
+    diagnosing: 0,
+    waiting_parts: 0,
+    repairing: 0,
+    testing: 0,
+    ready: 0,
+    delivered: 0,
+    monthlyEarnings: 0
   };
+  for (const r of repairs) {
+    if (r.status === "receptioned") stats.receptioned++;
+    else if (r.status === "diagnosing") stats.diagnosing++;
+    else if (r.status === "waiting_parts") stats.waiting_parts++;
+    else if (r.status === "repairing") stats.repairing++;
+    else if (r.status === "testing") stats.testing++;
+    else if (r.status === "ready") stats.ready++;
+    else if (r.status === "delivered") stats.delivered++;
+    if (r.status === "delivered" || r.status === "ready") {
+      stats.monthlyEarnings += (r.actualCost || r.estimatedCost || 0);
+    }
+  }
   
   res.json(stats);
 });
@@ -980,9 +990,17 @@ app.post("/api/repairs", (req, res) => {
   const newRepair = req.body;
   
   // Create unique consecutive sequential ID like LT-2026-0004
+  // computed from the highest existing number to avoid duplicates after deletions.
   const year = new Date().getFullYear();
-  const count = repairs.length + 1;
-  const seqId = `LT-${year}-${String(count).padStart(4, "0")}`;
+  const prefix = `LT-${year}-`;
+  let maxSeq = 0;
+  for (const r of repairs) {
+    if (r.id && r.id.startsWith(prefix)) {
+      const num = parseInt(r.id.slice(prefix.length), 10);
+      if (!isNaN(num) && num > maxSeq) maxSeq = num;
+    }
+  }
+  const seqId = `${prefix}${String(maxSeq + 1).padStart(4, "0")}`;
   
   const repairItem = {
     id: seqId,

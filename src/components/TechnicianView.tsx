@@ -39,6 +39,7 @@ interface TechnicianViewProps {
   repairs: RepairItem[];
   onUpdateRepair: (id: string, updateData: any) => Promise<void>;
   isLoading: boolean;
+  userBranch?: string;
 }
 
 const STATUS_COLUMNS: Array<{ id: RepairStatus; label: string; bg: string; text: string; border: string }> = [
@@ -50,13 +51,13 @@ const STATUS_COLUMNS: Array<{ id: RepairStatus; label: string; bg: string; text:
   { id: "ready", label: "Listo para Entrega", bg: "bg-emerald-950/20", text: "text-emerald-400", border: "border-emerald-900/40" }
 ];
 
-export default function TechnicianView({ repairs, onUpdateRepair, isLoading }: TechnicianViewProps) {
+export default function TechnicianView({ repairs, onUpdateRepair, isLoading, userBranch }: TechnicianViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(repairs[0]?.id || null);
   const [technicianName, setTechnicianName] = useState("Carlos Mendoza");
   
   // TV & Workshop Wide Screen TV states
   const [isTvMode, setIsTvMode] = useState(false);
-  const [tvFilterBranch, setTvFilterBranch] = useState<string>("all");
+  const [tvFilterBranch, setTvFilterBranch] = useState<string>(userBranch || "all");
   const [currentTime, setCurrentTime] = useState(new Date());
 
   // Local edit states for the selected vehicle workspace
@@ -269,10 +270,11 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading }: T
               <select
                 value={tvFilterBranch}
                 onChange={e => setTvFilterBranch(e.target.value)}
-                className="bg-transparent text-slate-200 text-xs font-black focus:outline-none"
+                disabled={!!userBranch}
+                className="bg-transparent text-slate-200 text-xs font-black focus:outline-none disabled:opacity-70 disabled:cursor-not-allowed"
               >
-                <option value="all" className="bg-slate-950 text-slate-200">Todas las sedes</option>
-                <option value="lince_arenales" className="bg-slate-950 text-slate-200">Lince (Arenales)</option>
+                {!userBranch && <option value="all" className="bg-slate-950 text-slate-200">Todas las sedes</option>}
+                <option value="lince_arenales" className="bg-slate-950 text-slate-200">San Isidro (Arenales)</option>
                 <option value="surco" className="bg-slate-950 text-slate-200">Surco</option>
                 <option value="san_borja" className="bg-slate-950 text-slate-200">San Borja</option>
                 <option value="lince_leal" className="bg-slate-950 text-slate-200">Lince (Jose Leal)</option>
@@ -444,7 +446,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading }: T
                             
                             // Branch tag translation
                             const branchShortLabels: Record<string, string> = {
-                              lince_arenales: "Arenales",
+                              lince_arenales: "S. Isidro",
                               surco: "Surco",
                               san_borja: "S. Borja",
                               lince_leal: "Leal"
@@ -582,7 +584,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading }: T
                         <Smartphone className="w-3.5 h-3.5" />
                         <span>Ficha de Recepción</span>
                       </h4>
-                      <p className="mb-1 text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "Arenales (Lince)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
+                      <p className="mb-1 text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "San Isidro (Arenales)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
                       <p className="mb-1 text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{activeRepair.serviceType === "mantenimiento" ? "Mantenimiento" : activeRepair.serviceType === "diagnostico" ? "Diagnóstico" : activeRepair.serviceType === "garantia" ? "Garantía" : activeRepair.serviceType === "cambio" ? "Cambio de Repuesto" : "Diagnóstico"}</span> {activeRepair.serviceTypeDetail && `(${activeRepair.serviceTypeDetail})`}</p>
                       <p className="mb-1 text-slate-300"><strong>Tipo de Vehículo:</strong> {activeRepair.vehicle.type.toUpperCase()}</p>
                       <p className="mb-1 text-slate-300"><strong>Voltaje:</strong> {activeRepair.vehicle.voltage}</p>
@@ -1020,7 +1022,7 @@ function TvCard({
 
   // Sede label and color
   const branchNames: Record<string, string> = {
-    lince_arenales: "Arenales (Lince)",
+    lince_arenales: "San Isidro (Arenales)",
     surco: "Surco",
     san_borja: "San Borja",
     lince_leal: "Jose Leal (Lince)"

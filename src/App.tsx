@@ -1,11 +1,14 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Header from "./components/Header";
 import ReceptionView from "./components/ReceptionView";
 import TechnicianView from "./components/TechnicianView";
 import DashboardView from "./components/DashboardView";
 import ChatView from "./components/ChatView";
+import ReportsView from "./components/ReportsView";
+import LoginView from "./components/LoginView";
 import { RepairItem, WorkshopStats } from "./types";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, LogOut } from "lucide-react";
+import { getSession, logout, isAdmin, SessionUser } from "./auth";
 import { 
   db, 
   isFirebaseConfigured, 
@@ -20,6 +23,7 @@ import {
 export default function App() {
   const [currentTab, setCurrentTab] = useState<string>("reception");
   const [repairs, setRepairs] = useState<RepairItem[]>([]);
+  const [session, setSession] = useState<SessionUser | null>(() => getSession());
   const [stats, setStats] = useState<WorkshopStats>({
     total: 0,
     receptioned: 0,
@@ -35,6 +39,53 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isPolling, setIsPolling] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
+
+  // Repairs filtered by branch for non-admin users
+  const visibleRepairs = useMemo(() => {
+    if (!session) return repairs;
+    if (isAdmin(session)) return repairs;
+    return repairs.filter((r) => r.workshopBranch === session.branch);
+  }, [repairs, session]);
+
+  // Stats computed from the visible set (per-branch for local users)
+  const visibleStats = useMemo(() => {
+    if (!session || isAdmin(session) || !session.branch) return stats;
+    const filtered = visibleRepairs;
+    const s: WorkshopStats = {
+      total: filtered.length,
+      receptioned: 0,
+      diagnosing: 0,
+      waiting_parts: 0,
+      repairing: 0,
+      testing: 0,
+      ready: 0,
+      delivered: 0,
+      monthlyEarnings: 0
+    };
+    for (const r of filtered) {
+      if (r.status === "receptioned") s.receptioned++;
+      else if (r.status === "diagnosing") s.diagnosing++;
+      else if (r.status === "waiting_parts") s.waiting_parts++;
+      else if (r.status === "repairing") s.repairing++;
+      else if (r.status === "testing") s.testing++;
+      else if (r.status === "ready") s.ready++;
+      else if (r.status === "delivered") s.delivered++;
+      if (r.status === "delivered" || r.status === "ready") {
+        s.monthlyEarnings += (r.actualCost || r.estimatedCost || 0);
+      }
+    }
+    return s;
+  }, [visibleRepairs, session, stats]);
+
+  const handleLogin = (user: SessionUser) => {
+    setSession(user);
+    setCurrentTab("reception");
+  };
+
+  const handleLogout = () => {
+    logout();
+    setSession(null);
+  };
 
   // Fetch all repairs & stats from backend (Fallback Mode)
   const fetchAllData = async (silent = false) => {
@@ -76,26 +127,38 @@ export default function App() {
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const repairsData: RepairItem[] = [];
         snapshot.forEach((doc) => {
-          repairsData.push(doc.data() as RepairItem);
+          repairsData.push({
+            ...(doc.data() as RepairItem),
+            id: doc.id,
+          });
         });
 
         setRepairs(repairsData);
 
-        // Calculate stats client-side in Firestore mode
-        const total = repairsData.length;
+        // Calculate stats client-side in Firestore mode (single pass)
         const statsData: WorkshopStats = {
-          total,
-          receptioned: repairsData.filter((r) => r.status === "receptioned").length,
-          diagnosing: repairsData.filter((r) => r.status === "diagnosing").length,
-          waiting_parts: repairsData.filter((r) => r.status === "waiting_parts").length,
-          repairing: repairsData.filter((r) => r.status === "repairing").length,
-          testing: repairsData.filter((r) => r.status === "testing").length,
-          ready: repairsData.filter((r) => r.status === "ready").length,
-          delivered: repairsData.filter((r) => r.status === "delivered").length,
-          monthlyEarnings: repairsData
-            .filter((r) => r.status === "delivered" || r.status === "ready")
-            .reduce((sum, r) => sum + (r.actualCost || r.estimatedCost || 0), 0)
+          total: repairsData.length,
+          receptioned: 0,
+          diagnosing: 0,
+          waiting_parts: 0,
+          repairing: 0,
+          testing: 0,
+          ready: 0,
+          delivered: 0,
+          monthlyEarnings: 0
         };
+        for (const r of repairsData) {
+          if (r.status === "receptioned") statsData.receptioned++;
+          else if (r.status === "diagnosing") statsData.diagnosing++;
+          else if (r.status === "waiting_parts") statsData.waiting_parts++;
+          else if (r.status === "repairing") statsData.repairing++;
+          else if (r.status === "testing") statsData.testing++;
+          else if (r.status === "ready") statsData.ready++;
+          else if (r.status === "delivered") statsData.delivered++;
+          if (r.status === "delivered" || r.status === "ready") {
+            statsData.monthlyEarnings += (r.actualCost || r.estimatedCost || 0);
+          }
+        }
         setStats(statsData);
         setIsLoading(false);
         setErrorMsg("");
@@ -123,8 +186,17 @@ export default function App() {
     try {
       if (isFirebaseConfigured && db) {
         const year = new Date().getFullYear();
-        const count = repairs.length + 1;
-        const seqId = `LT-${year}-${String(count).padStart(4, "0")}`;
+        // Compute next sequential ID from the highest existing number for this year,
+        // avoiding duplicates when records are deleted or users create concurrently.
+        const prefix = `LT-${year}-`;
+        let maxSeq = 0;
+        for (const r of repairs) {
+          if (r.id && r.id.startsWith(prefix)) {
+            const num = parseInt(r.id.slice(prefix.length), 10);
+            if (!isNaN(num) && num > maxSeq) maxSeq = num;
+          }
+        }
+        const seqId = `${prefix}${String(maxSeq + 1).padStart(4, "0")}`;
         
         const repairItem: RepairItem = {
           id: seqId,
@@ -284,12 +356,18 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {!session ? (
+        <LoginView onLogin={handleLogin} />
+      ) : (
+        <>
       {/* Cabecera / Navegación */}
       <Header
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
         isPolling={isPolling}
         onRefresh={() => fetchAllData(false)}
+        session={session}
+        onLogout={handleLogout}
       />
 
       {/* Alerta de Error en Red */}
@@ -299,6 +377,13 @@ export default function App() {
             <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
             <span>{errorMsg}</span>
           </div>
+        </div>
+      )}
+
+      {/* Barra de progreso durante actualizaciones silenciosas */}
+      {isLoading && repairs.length > 0 && (
+        <div className="fixed top-16 left-0 right-0 z-40 h-0.5 bg-slate-800 overflow-hidden">
+          <div className="h-full w-1/3 bg-cyan-500 rounded-full animate-loading-bar"></div>
         </div>
       )}
 
@@ -312,29 +397,36 @@ export default function App() {
         <main className="flex-1 pb-16">
           {currentTab === "reception" && (
             <ReceptionView
-              repairs={repairs}
+              repairs={visibleRepairs}
               onCreateRepair={handleCreateRepair}
               isLoading={isLoading}
+              userBranch={session.branch}
             />
           )}
 
           {currentTab === "technician" && (
             <TechnicianView
-              repairs={repairs}
+              repairs={visibleRepairs}
               onUpdateRepair={handleUpdateRepair}
               isLoading={isLoading}
+              userBranch={session.branch}
             />
           )}
 
           {currentTab === "dashboard" && (
             <DashboardView
-              repairs={repairs}
-              stats={stats}
+              repairs={visibleRepairs}
+              stats={visibleStats}
+              userBranch={session.branch}
             />
           )}
 
           {currentTab === "chat" && (
-            <ChatView />
+            <ChatView userBranch={session.branch} />
+          )}
+
+          {currentTab === "reports" && (
+            <ReportsView repairs={visibleRepairs} userBranch={session.branch} />
           )}
         </main>
       )}
@@ -345,6 +437,8 @@ export default function App() {
           <p>© 2026 Litio Energy S.A.C. - Sistema Automatizado de Taller de Vehículos Eléctricos</p>
         </div>
       </footer>
+        </>
+      )}
     </div>
   );
 }

@@ -49,18 +49,18 @@ interface ChatMessage {
 }
 
 const BRANCH_LABELS: Record<string, string> = {
-  "Litio Lince": "Lince (Arenales)",
+  "Litio Lince": "San Isidro (Arenales)",
   "Litio Surco": "Surco",
   "Litio San Borja": "San Borja",
   "Litio Jose Leal": "Lince (José Leal)",
   "Litio Leal": "Lince (José Leal)",
-  lince_arenales: "Lince (Arenales)",
+  lince_arenales: "San Isidro (Arenales)",
   surco: "Surco",
   san_borja: "San Borja",
   lince_leal: "Lince (José Leal)"
 };
 
-export default function ChatView() {
+export default function ChatView({ userBranch }: { userBranch?: string }) {
   const [clients, setClients] = useState<ChatClient[]>([]);
   const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -128,7 +128,18 @@ export default function ChatView() {
 
         list.push(client);
       }
-      setClients(list);
+
+      // Filter by branch/sede for local users
+      const branchSedeMap: Record<string, string[]> = {
+        lince_arenales: ["Litio Lince", "Litio San Isidro"],
+        surco: ["Litio Surco"],
+        san_borja: ["Litio San Borja"],
+        lince_leal: ["Litio Leal", "Litio Jose Leal"]
+      };
+      const allowedSedes = userBranch ? branchSedeMap[userBranch] || [] : null;
+      const filtered = allowedSedes ? list.filter((c) => allowedSedes.includes(c.sede)) : list;
+
+      setClients(filtered);
       setLoading(false);
     }, (err) => {
       console.error("ChatView onSnapshot error:", err);
@@ -137,7 +148,7 @@ export default function ChatView() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [userBranch]);
 
   // Listen to messages for the selected client
   useEffect(() => {
