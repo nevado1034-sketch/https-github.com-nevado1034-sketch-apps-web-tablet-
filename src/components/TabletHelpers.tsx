@@ -1,5 +1,11 @@
 import React, { useRef, useState, useEffect } from "react";
-import { Camera, Upload, Trash2, Check, Video, RefreshCw, AlertCircle, Play } from "lucide-react";
+import { Camera, Upload, Trash2, Check, Video, RefreshCw, AlertCircle, Play, Square, MonitorPlay } from "lucide-react";
+
+export interface RecordedVideo {
+  blob: Blob;
+  durationSec: number;
+  sizeBytes: number;
+}
 
 interface SignaturePadProps {
   onSave: (dataUrl: string) => void;
@@ -506,6 +512,242 @@ export function PhotoManager({
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+const VIDEO_MAX_SECONDS = 60;
+
+interface VideoRecorderProps {
+  onRecorded: (video: RecordedVideo) => void;
+  branchLabel?: string;
+}
+
+export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderProps) {
+  const [isRecording, setIsRecording] = useState(false);
+  const [error, setError] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  const [blob, setBlob] = useState<Blob | null>(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<number | null>(null);
+  const blobTypeRef = useRef("video/webm");
+
+  const stopStream = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopStream();
+      stopTimer();
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        try { recorderRef.current.stop(); } catch {}
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startRecording = async () => {
+    setError("");
+    setBlob(null);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl("");
+    setElapsed(0);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      const candidates = [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+        "video/mp4"
+      ];
+      const mime = candidates.find((t) => MediaRecorder.isTypeSupported(t)) || "video/webm";
+      blobTypeRef.current = mime;
+
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      recorderRef.current = rec;
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size) chunksRef.current.push(e.data);
+      };
+      rec.onstop = () => {
+        const b = new Blob(chunksRef.current, { type: blobTypeRef.current });
+        setBlob(b);
+        setPreviewUrl(URL.createObjectURL(b));
+        stopStream();
+        stopTimer();
+      };
+
+      rec.start(1000);
+      setIsRecording(true);
+      timerRef.current = window.setInterval(() => {
+        setElapsed((p) => {
+          if (p + 1 >= VIDEO_MAX_SECONDS) {
+            stopRecording();
+            return p;
+          }
+          return p + 1;
+        });
+      }, 1000);
+    } catch (err) {
+      console.error("Video camera error:", err);
+      setError("No se pudo acceder a la cámara para grabar video. Verifica que el navegador tenga permiso de cámara (HTTPS requerido).");
+      setIsRecording(false);
+    }
+  };
+
+  const stopRecording = () => {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
+    setIsRecording(false);
+  };
+
+  const discard = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setBlob(null);
+    setPreviewUrl("");
+    setElapsed(0);
+  };
+
+  const save = () => {
+    if (!blob) return;
+    onRecorded({ blob, durationSec: elapsed || 1, sizeBytes: blob.size });
+    discard();
+  };
+
+  const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider flex items-center space-x-1.5">
+            <MonitorPlay className="w-4 h-4 text-cyan-400" />
+            <span>Video de Respaldo (Evidencia)</span>
+          </h4>
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            Graba un recorrido del vehículo como respaldo ante reclamos. Se sube a la nube y se guarda la URL en la orden.
+            {branchLabel ? ` · ${branchLabel}` : ""}
+          </p>
+        </div>
+        <span className="self-start sm:self-center text-[9px] font-mono font-black tracking-widest bg-cyan-950 text-cyan-400 border border-cyan-800/40 px-2 py-1 rounded-full shrink-0">
+          NUBE · {VIDEO_MAX_SECONDS}s MÁX
+        </span>
+      </div>
+
+      {error && (
+        <div className="flex items-start space-x-2 p-3 bg-rose-950/30 border border-rose-800/50 text-rose-200 rounded-xl text-xs">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Recording */}
+      {isRecording && (
+        <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden relative">
+          <video
+            ref={videoRef}
+            className="w-full aspect-video bg-black object-cover"
+            playsInline
+            muted
+          />
+          <div className="absolute top-3 left-3 flex items-center space-x-2 bg-slate-950/80 border border-rose-500/40 rounded-lg px-2.5 py-1">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
+            <span className="font-mono text-xs font-black text-rose-400 tracking-widest">REC</span>
+            <span className="font-mono text-xs font-bold text-slate-200">{fmt(elapsed)}</span>
+          </div>
+          {branchLabel && (
+            <div className="absolute bottom-3 left-3 bg-slate-950/80 border border-cyan-500/30 rounded-lg px-2.5 py-1 text-[10px] font-mono font-bold text-cyan-300">
+              LITIO ENERGY · {new Date().toLocaleString()} · {branchLabel}
+            </div>
+          )}
+          <div className="absolute bottom-3 right-3 flex justify-center space-x-3">
+            <button
+              type="button"
+              onClick={stopRecording}
+              className="flex items-center space-x-1.5 bg-rose-500 hover:bg-rose-400 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-lg transition-transform hover:scale-105"
+            >
+              <Square className="w-3.5 h-3.5" />
+              <span>Detener ({fmt(elapsed)})</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Preview */}
+      {!isRecording && blob && previewUrl && (
+        <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
+          <video src={previewUrl} className="w-full aspect-video bg-black object-contain" controls playsInline />
+          <div className="p-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800">
+            <span className="text-[11px] font-mono text-slate-400">
+              Video grabado · {fmt(elapsed)} · {(blob.size / 1024 / 1024).toFixed(2)} MB
+            </span>
+            <div className="flex space-x-2">
+              <button
+                type="button"
+                onClick={discard}
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-colors"
+              >
+                Descartar
+              </button>
+              <button
+                type="button"
+                onClick={startRecording}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded-xl text-xs font-bold transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Grabar de nuevo</span>
+              </button>
+              <button
+                type="button"
+                onClick={save}
+                className="flex items-center space-x-1.5 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-xs font-bold shadow-lg transition-colors"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Guardar video</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Start */}
+      {!isRecording && !blob && (
+        <button
+          type="button"
+          onClick={startRecording}
+          className="w-full flex flex-col items-center justify-center p-5 bg-slate-950 hover:bg-slate-850 border border-dashed border-slate-800/80 hover:border-cyan-500/40 rounded-xl transition-all text-slate-300 hover:text-cyan-400 group space-y-2"
+        >
+          <Video className="w-6 h-6 text-cyan-500 group-hover:scale-110 transition-transform" />
+          <span className="text-xs font-bold">Grabar Video</span>
+          <span className="text-[9px] text-slate-500 font-mono">Recorrido del vehículo · máx {VIDEO_MAX_SECONDS} segundos</span>
+        </button>
       )}
     </div>
   );

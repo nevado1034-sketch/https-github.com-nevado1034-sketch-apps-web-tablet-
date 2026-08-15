@@ -1,82 +1,46 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // Helpers de validación
-    function isValidStatus(status) {
-      return status in [
-        'receptioned', 'diagnosing', 'waiting_parts',
-        'repairing', 'testing', 'ready', 'delivered'
-      ];
+    function isAllowedLocal(localKey) {
+      return localKey in ['lince_arenales', 'surco', 'san_borja', 'lince_leal'];
     }
 
-    function isValidBranch(branch) {
-      return branch in [
-        'lince_arenales', 'surco', 'san_borja', 'lince_leal'
-      ];
-    }
-
-    function isValidServiceType(type) {
-      return type in ['mantenimiento', 'diagnostico', 'garantia', 'cambio'];
-    }
-
-    function isNonEmptyString(value) {
-      return value is string && value.size() > 0;
-    }
-
-    // Reglas para repairs collection
+    // Repairs collection (tablet + server)
     match /repairs/{repairId} {
-      allow read: if true;
-
-      allow create: if
-        isNonEmptyString(request.resource.data.id) &&
-        isNonEmptyString(request.resource.data.receptionDate) &&
-        isNonEmptyString(request.resource.data.status) &&
-        isValidStatus(request.resource.data.status) &&
-        isValidBranch(request.resource.data.workshopBranch) &&
-        isValidServiceType(request.resource.data.serviceType) &&
-        request.resource.data.client is map &&
-        isNonEmptyString(request.resource.data.client.name) &&
-        request.resource.data.vehicle is map;
-
-      allow update: if
-        isValidStatus(request.resource.data.status) &&
-        request.resource.data.vehicle is map;
-
-      allow delete: if false;
+      allow read, write: if true;
     }
 
-    // Clientes registrados desde la App Android / Tablet
+    // Canonical clients (Android app + espejo). Se mantiene permisivo por compatibilidad con Android.
     match /clientes/{clientId} {
-      allow read: if true;
+      allow read, write: if true;
+    }
 
-      allow create: if
-        request.resource.data.name is string &&
-        request.resource.data.name.size() > 0 &&
-        (request.resource.data.phone is string ||
-         request.resource.data.dni is string) &&
-        request.resource.data.createdAt is number;
+    // Registro de clientes por local: estructura validada
+    match /clientes/{localKey}/clientes/{clientId} {
+      allow read: if isAllowedLocal(localKey);
+      allow write: if isAllowedLocal(localKey)
+        && request.resource.data.size() <= 20
+        && request.resource.data.name is string
+        && request.resource.data.dni is string
+        && request.resource.data.sedeKey is string;
+    }
 
-      allow update: if
-        request.resource.data.name is string &&
-        request.resource.data.name.size() > 0;
+    // Recibos Express por local
+    match /recibos_express/{localKey}/recibos/{correlative} {
+      allow read: if isAllowedLocal(localKey);
+      allow write: if isAllowedLocal(localKey)
+        && request.resource.data.correlative == correlative
+        && request.resource.data.total is number;
+    }
 
-      allow delete: if false;
+    match /recibos_express/{localKey}/meta/{metaId} {
+      allow read, write: if isAllowedLocal(localKey)
+        && request.resource.data.count is number;
     }
 
     // Chat técnico entre cliente y taller
     match /chats/{phoneKey}/messages/{messageId} {
-      allow read: if true;
-
-      allow create: if
-        isNonEmptyString(request.resource.data.message) &&
-        request.resource.data.timestamp is number &&
-        request.resource.data.senderRole in ['CLIENT', 'TECHNICIAN', 'WORKSHOP'];
-
-      allow update: if
-        request.resource.data.timestamp is number;
-
-      allow delete: if false;
+      allow read, write: if true;
     }
   }
 }

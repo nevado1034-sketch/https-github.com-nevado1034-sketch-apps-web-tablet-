@@ -5,7 +5,9 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    base: '/https-github.com-nevado1034-sketch-apps-web-tablet-/',
+    // Base configurable: para Firebase Hosting usar VITE_BASE=/ (por defecto).
+    // Para GitHub Pages: VITE_BASE=/https-github.com-nevado1034-sketch-apps-web-tablet-/
+    base: process.env.VITE_BASE || '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

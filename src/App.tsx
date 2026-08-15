@@ -1,17 +1,85 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import Header from "./components/Header";
 import ReceptionView from "./components/ReceptionView";
 import TechnicianView from "./components/TechnicianView";
 import DashboardView from "./components/DashboardView";
+import ClientesView from "./components/ClientesView";
 import ChatView from "./components/ChatView";
-import ReportsView from "./components/ReportsView";
-import LoginView from "./components/LoginView";
-import { RepairItem, WorkshopStats } from "./types";
-import { AlertCircle, LogOut } from "lucide-react";
-import { getSession, logout, isAdmin, SessionUser } from "./auth";
+import ExpressView from "./components/ExpressView";
+import QualityControlView from "./components/QualityControlView";
+import PresupuestoView from "./components/PresupuestoView";
+import OrdenPublica from "./components/OrdenPublica";
+import AuthScreen from "./components/AuthScreen";
+import AccessManager from "./components/AccessManager";
+import { RepairItem, WorkshopStats, VideoEvidence } from "./types";
+import { AuthConfig, AuthSession, ROLE_TABS, loadConfig, loadSession, saveConfig, saveSession, clearSession, isValidConfig, pushRemoteConfig } from "./auth";
+import { AlertCircle, RefreshCw } from "lucide-react";
+
+class AppErrorBoundary extends React.Component<{ children?: React.ReactNode }, { error: Error | null }> {
+  constructor(props: { children?: React.ReactNode }) {
+    super(props);
+    (this as any).state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error) {
+    console.error("AppErrorBoundary:", error);
+  }
+  render() {
+    const { error } = (this as any).state;
+    if (error) {
+      return (
+        <main className="flex-1 flex flex-col items-center justify-center px-4 py-16 text-center">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-6 max-w-md w-full">
+            <AlertCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+            <h2 className="text-lg font-bold text-white mb-1">Ocurrió un error inesperado</h2>
+            <p className="text-sm text-slate-300 break-all mb-4">
+              {error.message || "Error desconocido"}
+            </p>
+            <button
+              onClick={() => {
+                try {
+                  ["litio_express_services_", "litio_express_config_", "litio_express_history_"].forEach((p) => {
+                    Object.keys(localStorage)
+                      .filter((k) => k.startsWith(p))
+                      .forEach((k) => localStorage.removeItem(k));
+                  });
+                } catch {}
+                (this as any).setState({ error: null });
+              }}
+              className="inline-flex items-center gap-2 bg-red-500 hover:bg-red-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg mb-2"
+            >
+              <RefreshCw className="w-4 h-4" /> Limpiar datos del Express y reintentar
+            </button>
+            <div>
+              <button
+                onClick={() => {
+                  try {
+                    location.href = location.pathname + "?v=" + Date.now();
+                  } catch {
+                    location.reload();
+                  }
+                }}
+                className="text-sm text-slate-400 hover:text-white underline"
+              >
+                Recargar la aplicación
+              </button>
+            </div>
+          </div>
+        </main>
+      );
+    }
+    return (this as any).props.children;
+  }
+}
 import { 
   db, 
   isFirebaseConfigured, 
+  storage,
+  ref,
+  uploadBytes,
+  getDownloadURL,
   collection, 
   doc, 
   setDoc, 
@@ -20,10 +88,23 @@ import {
   orderBy 
 } from "./firebase";
 
+function currentBuildHash(): string {
+  try {
+    const name = performance
+      .getEntriesByType("resource")
+      .map((e) => e.name)
+      .find((n) => /assets\/index-[A-Za-z0-9_-]+\.js/.test(n));
+    if (name) {
+      const m = name.match(/index-([^.]+)\.js/);
+      if (m) return m[1];
+    }
+  } catch {}
+  return "?";
+}
+
 export default function App() {
   const [currentTab, setCurrentTab] = useState<string>("reception");
   const [repairs, setRepairs] = useState<RepairItem[]>([]);
-  const [session, setSession] = useState<SessionUser | null>(() => getSession());
   const [stats, setStats] = useState<WorkshopStats>({
     total: 0,
     receptioned: 0,
@@ -40,52 +121,55 @@ export default function App() {
   const [isPolling, setIsPolling] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
 
-  // Repairs filtered by branch for non-admin users
-  const visibleRepairs = useMemo(() => {
-    if (!session) return repairs;
-    if (isAdmin(session)) return repairs;
-    return repairs.filter((r) => r.workshopBranch === session.branch);
-  }, [repairs, session]);
+  // Configuración de accesos y sesión activa (guardadas localmente en esta tablet)
+  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(() => loadConfig());
+  const [session, setSession] = useState<AuthSession | null>(() => loadSession());
+  const [authConfigReady, setAuthConfigReady] = useState<boolean>(false);
 
-  // Stats computed from the visible set (per-branch for local users)
-  const visibleStats = useMemo(() => {
-    if (!session || isAdmin(session) || !session.branch) return stats;
-    const filtered = visibleRepairs;
-    const s: WorkshopStats = {
-      total: filtered.length,
-      receptioned: 0,
-      diagnosing: 0,
-      waiting_parts: 0,
-      repairing: 0,
-      testing: 0,
-      ready: 0,
-      delivered: 0,
-      monthlyEarnings: 0
-    };
-    for (const r of filtered) {
-      if (r.status === "receptioned") s.receptioned++;
-      else if (r.status === "diagnosing") s.diagnosing++;
-      else if (r.status === "waiting_parts") s.waiting_parts++;
-      else if (r.status === "repairing") s.repairing++;
-      else if (r.status === "testing") s.testing++;
-      else if (r.status === "ready") s.ready++;
-      else if (r.status === "delivered") s.delivered++;
-      if (r.status === "delivered" || r.status === "ready") {
-        s.monthlyEarnings += (r.actualCost || r.estimatedCost || 0);
-      }
+  // Si la sesión activa no tiene permiso sobre la pestaña actual, redirige a la primera permitida
+  useEffect(() => {
+    if (session && !ROLE_TABS[session.role].includes(currentTab)) {
+      setCurrentTab(ROLE_TABS[session.role][0]);
     }
-    return s;
-  }, [visibleRepairs, session, stats]);
+  }, [session]);
 
-  const handleLogin = (user: SessionUser) => {
-    setSession(user);
-    setCurrentTab("reception");
-  };
+  // Ruta pública para el cliente: #/orden/{id} (sin necesidad de iniciar sesión)
+  const [publicOrderId, setPublicOrderId] = useState<string | null>(() => {
+    const m = window.location.hash.match(/^#\/orden\/(.+)$/);
+    return m ? decodeURIComponent(m[1]) : null;
+  });
 
-  const handleLogout = () => {
-    logout();
-    setSession(null);
-  };
+  useEffect(() => {
+    const onHash = () => {
+      const m = window.location.hash.match(/^#\/orden\/(.+)$/);
+      setPublicOrderId(m ? decodeURIComponent(m[1]) : null);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  // Sincroniza la configuración de accesos con Firestore para que sea la misma en todos los dispositivos
+  useEffect(() => {
+    if (isFirebaseConfigured && db) {
+      const unsub = onSnapshot(doc(db, "config", "accesos"), (snap) => {
+        const data = snap.data();
+        const remote = data && (data.config || data);
+        if (isValidConfig(remote)) {
+          setAuthConfig(remote);
+          saveConfig(remote);
+        } else if (!loadConfig()) {
+          setAuthConfig(null);
+        }
+        setAuthConfigReady(true);
+      }, (err) => {
+        console.error("Error sincronizando configuración de accesos:", err);
+        setAuthConfigReady(true);
+      });
+      return () => unsub();
+    }
+    setAuthConfigReady(true);
+    return undefined;
+  }, []);
 
   // Fetch all repairs & stats from backend (Fallback Mode)
   const fetchAllData = async (silent = false) => {
@@ -127,38 +211,26 @@ export default function App() {
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const repairsData: RepairItem[] = [];
         snapshot.forEach((doc) => {
-          repairsData.push({
-            ...(doc.data() as RepairItem),
-            id: doc.id,
-          });
+          repairsData.push(doc.data() as RepairItem);
         });
 
         setRepairs(repairsData);
 
-        // Calculate stats client-side in Firestore mode (single pass)
+        // Calculate stats client-side in Firestore mode
+        const total = repairsData.length;
         const statsData: WorkshopStats = {
-          total: repairsData.length,
-          receptioned: 0,
-          diagnosing: 0,
-          waiting_parts: 0,
-          repairing: 0,
-          testing: 0,
-          ready: 0,
-          delivered: 0,
-          monthlyEarnings: 0
+          total,
+          receptioned: repairsData.filter((r) => r.status === "receptioned").length,
+          diagnosing: repairsData.filter((r) => r.status === "diagnosing").length,
+          waiting_parts: repairsData.filter((r) => r.status === "waiting_parts").length,
+          repairing: repairsData.filter((r) => r.status === "repairing").length,
+          testing: repairsData.filter((r) => r.status === "testing").length,
+          ready: repairsData.filter((r) => r.status === "ready").length,
+          delivered: repairsData.filter((r) => r.status === "delivered").length,
+          monthlyEarnings: repairsData
+            .filter((r) => r.status === "delivered" || r.status === "ready")
+            .reduce((sum, r) => sum + (r.actualCost || r.estimatedCost || 0), 0)
         };
-        for (const r of repairsData) {
-          if (r.status === "receptioned") statsData.receptioned++;
-          else if (r.status === "diagnosing") statsData.diagnosing++;
-          else if (r.status === "waiting_parts") statsData.waiting_parts++;
-          else if (r.status === "repairing") statsData.repairing++;
-          else if (r.status === "testing") statsData.testing++;
-          else if (r.status === "ready") statsData.ready++;
-          else if (r.status === "delivered") statsData.delivered++;
-          if (r.status === "delivered" || r.status === "ready") {
-            statsData.monthlyEarnings += (r.actualCost || r.estimatedCost || 0);
-          }
-        }
         setStats(statsData);
         setIsLoading(false);
         setErrorMsg("");
@@ -186,17 +258,54 @@ export default function App() {
     try {
       if (isFirebaseConfigured && db) {
         const year = new Date().getFullYear();
-        // Compute next sequential ID from the highest existing number for this year,
-        // avoiding duplicates when records are deleted or users create concurrently.
-        const prefix = `LT-${year}-`;
-        let maxSeq = 0;
-        for (const r of repairs) {
-          if (r.id && r.id.startsWith(prefix)) {
-            const num = parseInt(r.id.slice(prefix.length), 10);
-            if (!isNaN(num) && num > maxSeq) maxSeq = num;
+        let count = repairs.length + 1;
+        let seqId = `LT-${year}-${String(count).padStart(4, "0")}`;
+        const existingIds = new Set(repairs.map((r) => r.id));
+        while (existingIds.has(seqId)) {
+          count++;
+          seqId = `LT-${year}-${String(count).padStart(4, "0")}`;
+        }
+
+        // Subir videos de respaldo a Firebase Storage: evidencias/{año}/{mes}/{orden}/{timestamp}-{sede}.webm
+        const videoBlobs = payload.videoEvidenceBlobs || [];
+        const videoEvidence: VideoEvidence[] = [];
+        let failedUploads = 0;
+        const now = new Date();
+        const month = String(now.getMonth() + 1).padStart(2, "0");
+        const branch = payload.workshopBranch || "lince_arenales";
+
+        if (videoBlobs.length) {
+          if (!storage) {
+            alert("El respaldo en video requiere Firebase Storage. Actívalo en la consola de Firebase para poder guardar los videos.");
+          } else {
+            for (const v of videoBlobs) {
+              try {
+                const ext = (v.blob.type || "video/webm").includes("mp4") ? "mp4" : "webm";
+                const fileRef = ref(
+                  storage,
+                  `evidencias/${year}/${month}/${seqId}/${Date.now()}-${branch}.${ext}`
+                );
+                await uploadBytes(fileRef, v.blob);
+                const url = await getDownloadURL(fileRef);
+                videoEvidence.push({
+                  url,
+                  durationSec: v.durationSec,
+                  sizeBytes: v.sizeBytes,
+                  recordedAt: new Date().toISOString(),
+                  recordedBy: "Recepcionista Litio",
+                  orderId: seqId,
+                  branch
+                });
+              } catch (uploadErr) {
+                console.error("Error subiendo video de evidencia:", uploadErr);
+                failedUploads++;
+              }
+            }
+            if (failedUploads > 0) {
+              alert(`No se pudo subir ${failedUploads} video(s) a la nube. El video quedó solo en la memoria de esta tablet y el cliente NO podrá verlo. Verifica tu conexión y vuelve a grabarlo.`);
+            }
           }
         }
-        const seqId = `${prefix}${String(maxSeq + 1).padStart(4, "0")}`;
         
         const repairItem: RepairItem = {
           id: seqId,
@@ -207,8 +316,13 @@ export default function App() {
           client: payload.client,
           vehicle: payload.vehicle,
           accessories: payload.accessories,
-          visualState: payload.visualState,
+          visualState: {
+            ...payload.visualState,
+            videoRecorded: videoEvidence.length > 0,
+            videoEvidence
+          },
           status: "receptioned",
+          source: "tablet",
           aiDiagnostic: payload.aiDiagnostic || null,
           technicianNotes: "Vehículo recién ingresado por recepción.",
           estimatedCost: Number(payload.estimatedCost) || 0,
@@ -235,13 +349,15 @@ export default function App() {
             lince_arenales: "Litio Lince",
             surco: "Litio Surco",
             san_borja: "Litio San Borja",
-            lince_leal: "Litio Lince"
+            lince_leal: "Litio Jose Leal"
           };
           const typeToLabel: Record<string, string> = {
             scooter: "Scooter",
-            moto: "Moto",
             bici: "Bicicleta",
-            otro: "Otros"
+            moto: "Moto",
+            bicimoto: "Bicimoto",
+            trimoto: "Trimoto",
+            otro: "Otro"
           };
           const phoneKey = (payload.client.phone || "").trim() ||
             (payload.client.dni || "").trim() || `tablet-${Date.now()}`;
@@ -262,8 +378,14 @@ export default function App() {
             estimatedCost: Number(payload.estimatedCost) || 0,
             estimatedCompletionDate: "Pendiente de diagnóstico",
             sede: branchToSede[payload.workshopBranch] || "Litio Surco",
+            sedeKey: payload.workshopBranch || "lince_arenales",
+            source: "tablet",
             createdAt: Date.now()
           };
+          const branchKey = payload.workshopBranch || "lince_arenales";
+          // Lista propia por local: cada local guarda sus clientes en su subcolección
+          await setDoc(doc(db, "clientes", branchKey, "clientes", clientDocId), clientData);
+          // Espejo canónico por teléfono (compatibilidad con la app Android)
           await setDoc(doc(db, "clientes", clientDocId), clientData);
         } catch (clientErr) {
           console.error("Error sincronizando cliente a Firestore:", clientErr);
@@ -327,14 +449,65 @@ export default function App() {
           });
         }
 
+        // Subir videos de respaldo registrados por el técnico durante el diagnóstico
+        const videoBlobs = updateData.videoEvidenceBlobs || [];
+        const newVideoEvidence: VideoEvidence[] = [];
+        let failedUploads = 0;
+        if (videoBlobs.length) {
+          if (!storage) {
+            alert("El respaldo en video requiere Firebase Storage. Actívalo en la consola de Firebase para poder guardar los videos.");
+          } else {
+            const year = new Date().getFullYear();
+            const month = String(new Date().getMonth() + 1).padStart(2, "0");
+            for (const v of videoBlobs) {
+              try {
+                const ext = (v.blob.type || "video/webm").includes("mp4") ? "mp4" : "webm";
+                const fileRef = ref(
+                  storage,
+                  `evidencias/${year}/${month}/${id}/${Date.now()}-tecnico.${ext}`
+                );
+                await uploadBytes(fileRef, v.blob);
+                const url = await getDownloadURL(fileRef);
+                newVideoEvidence.push({
+                  url,
+                  durationSec: v.durationSec,
+                  sizeBytes: v.sizeBytes,
+                  recordedAt: new Date().toISOString(),
+                  recordedBy: updateData.technicianName || "Técnico Litio",
+                  orderId: id,
+                  branch: currentItem.workshopBranch || "lince_arenales"
+                });
+              } catch (uploadErr) {
+                console.error("Error subiendo video del técnico:", uploadErr);
+                failedUploads++;
+              }
+            }
+            if (failedUploads > 0) {
+              alert(`No se pudo subir ${failedUploads} video(s) a la nube. El video quedó solo en la memoria de esta tablet y el cliente NO podrá verlo. Verifica tu conexión y vuelve a grabarlo.`);
+            }
+          }
+        }
+        delete updateData.videoEvidenceBlobs;
+
+        const existingVisual = currentItem.visualState || {};
+        const incomingVisual = updateData.visualState || {};
+        const mergedVideoEvidence = [...(existingVisual.videoEvidence || []), ...newVideoEvidence];
+
         const updatedItem = {
           ...currentItem,
           ...updateData,
-          historyLog: logs
+          historyLog: logs,
+          visualState: {
+            ...existingVisual,
+            ...incomingVisual,
+            videoEvidence: mergedVideoEvidence,
+            videoRecorded: mergedVideoEvidence.length > 0
+          }
         };
 
         await setDoc(doc(db, "repairs", id), updatedItem);
       } else {
+        delete updateData.videoEvidenceBlobs;
         const response = await fetch(`/api/repairs/${id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -354,20 +527,77 @@ export default function App() {
     }
   };
 
+  if (publicOrderId) {
+    return <OrdenPublica orderId={publicOrderId} />;
+  }
+
+  if (!authConfigReady) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="flex flex-col items-center space-y-3">
+          <div className="w-10 h-10 border-4 border-slate-900 border-t-cyan-500 rounded-full animate-spin"></div>
+          <p className="text-slate-500 font-medium text-sm">Cargando configuración de accesos...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authConfig || !session) {
+    return (
+      <AuthScreen
+        config={authConfig}
+        onSetup={(c) => {
+          setAuthConfig(c);
+          saveConfig(c);
+          pushRemoteConfig(c).catch((err) => console.error("No se pudo sincronizar accesos:", err));
+        }}
+        onAuthed={(s) => {
+          setSession(s);
+          saveSession(s);
+        }}
+      />
+    );
+  }
+
+  const allowedTabs = ROLE_TABS[session.role];
+
+  // Las jefas y técnicos solo ven la información de su propio local; el admin ve todo
+  const visibleRepairs = session.localKey
+    ? repairs.filter((r) => r.workshopBranch === session.localKey)
+    : repairs;
+  const visibleStats: WorkshopStats = session.localKey
+    ? {
+        total: visibleRepairs.length,
+        receptioned: visibleRepairs.filter((r) => r.status === "receptioned").length,
+        diagnosing: visibleRepairs.filter((r) => r.status === "diagnosing").length,
+        waiting_parts: visibleRepairs.filter((r) => r.status === "waiting_parts").length,
+        repairing: visibleRepairs.filter((r) => r.status === "repairing").length,
+        testing: visibleRepairs.filter((r) => r.status === "testing").length,
+        ready: visibleRepairs.filter((r) => r.status === "ready").length,
+        delivered: visibleRepairs.filter((r) => r.status === "delivered").length,
+        monthlyEarnings: visibleRepairs
+          .filter((r) => r.status === "delivered" || r.status === "ready")
+          .reduce((sum, r) => sum + (r.actualCost || r.estimatedCost || 0), 0)
+      }
+    : stats;
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      {!session ? (
-        <LoginView onLogin={handleLogin} />
-      ) : (
-        <>
       {/* Cabecera / Navegación */}
       <Header
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
         isPolling={isPolling}
         onRefresh={() => fetchAllData(false)}
-        session={session}
-        onLogout={handleLogout}
+        allowedTabs={allowedTabs}
+        currentUser={session}
+        qcCount={visibleRepairs.filter((r) => r.status === "testing").length}
+        presupuestoCount={visibleRepairs.filter((r) => (r.spareParts || []).length > 0).length}
+        onLogout={() => {
+          clearSession();
+          setSession(null);
+          setCurrentTab("reception");
+        }}
       />
 
       {/* Alerta de Error en Red */}
@@ -380,13 +610,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Barra de progreso durante actualizaciones silenciosas */}
-      {isLoading && repairs.length > 0 && (
-        <div className="fixed top-16 left-0 right-0 z-40 h-0.5 bg-slate-800 overflow-hidden">
-          <div className="h-full w-1/3 bg-cyan-500 rounded-full animate-loading-bar"></div>
-        </div>
-      )}
-
       {/* Cargando (Primeras peticiones) */}
       {isLoading && repairs.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center space-y-3">
@@ -395,39 +618,87 @@ export default function App() {
         </div>
       ) : (
         <main className="flex-1 pb-16">
-          {currentTab === "reception" && (
-            <ReceptionView
-              repairs={visibleRepairs}
-              onCreateRepair={handleCreateRepair}
-              isLoading={isLoading}
-              userBranch={session.branch}
-            />
-          )}
+          <AppErrorBoundary>
+            {currentTab === "reception" && (
+              <ReceptionView
+                repairs={visibleRepairs}
+                onCreateRepair={handleCreateRepair}
+                isLoading={isLoading}
+                userLocalKey={session.localKey}
+                userRole={session.role}
+              />
+            )}
 
-          {currentTab === "technician" && (
-            <TechnicianView
-              repairs={visibleRepairs}
-              onUpdateRepair={handleUpdateRepair}
-              isLoading={isLoading}
-              userBranch={session.branch}
-            />
-          )}
+            {currentTab === "technician" && (
+              <TechnicianView
+                repairs={visibleRepairs}
+                onUpdateRepair={handleUpdateRepair}
+                isLoading={isLoading}
+                userLocalKey={session.localKey}
+              />
+            )}
 
-          {currentTab === "dashboard" && (
-            <DashboardView
-              repairs={visibleRepairs}
-              stats={visibleStats}
-              userBranch={session.branch}
-            />
-          )}
+            {currentTab === "presupuesto" && (
+              <PresupuestoView
+                repairs={visibleRepairs}
+                onUpdateRepair={handleUpdateRepair}
+                userLocalKey={session.localKey}
+                userName={session.name}
+              />
+            )}
 
-          {currentTab === "chat" && (
-            <ChatView userBranch={session.branch} />
-          )}
+            {currentTab === "dashboard" && (
+              <DashboardView
+                repairs={visibleRepairs}
+                stats={visibleStats}
+              />
+            )}
 
-          {currentTab === "reports" && (
-            <ReportsView repairs={visibleRepairs} userBranch={session.branch} />
-          )}
+            {currentTab === "clientes" && (
+              <ClientesView repairs={visibleRepairs} userLocalKey={session.localKey} />
+            )}
+
+            {currentTab === "chat" && (
+              <ChatView userLocalKey={session.localKey} userName={session.name} />
+            )}
+
+            {currentTab === "express" && (
+              <ExpressView userLocalKey={session.localKey} userName={session.name} />
+            )}
+
+            {currentTab === "calidad" && (
+              <QualityControlView
+                repairs={visibleRepairs}
+                onUpdateRepair={handleUpdateRepair}
+                userLocalKey={session.localKey}
+                userName={session.name}
+              />
+            )}
+
+            {currentTab === "accesos" && (
+              <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
+                <div className="mb-6">
+                  <h1 className="text-xl font-bold text-white">Administración de accesos</h1>
+                  <p className="text-sm text-slate-400 mt-1">
+                    Configura las jefas y técnicos de cada local. Los cambios se aplican en todos los
+                    dispositivos conectados.
+                  </p>
+                </div>
+                <AccessManager
+                  initial={authConfig}
+                  onSave={(c) => {
+                    setAuthConfig(c);
+                    saveConfig(c);
+                    pushRemoteConfig(c).catch((err) =>
+                      console.error("No se pudo sincronizar accesos:", err)
+                    );
+                    alert("Configuración de accesos guardada correctamente.");
+                  }}
+                  saveLabel="Guardar cambios"
+                />
+              </div>
+            )}
+          </AppErrorBoundary>
         </main>
       )}
 
@@ -435,10 +706,9 @@ export default function App() {
       <footer className="bg-slate-900 border-t border-slate-800 py-4 text-center text-xs text-slate-500 font-medium mt-auto">
         <div className="max-w-7xl mx-auto px-4">
           <p>© 2026 Litio Energy S.A.C. - Sistema Automatizado de Taller de Vehículos Eléctricos</p>
+          <p className="mt-1">Build: {currentBuildHash()}</p>
         </div>
       </footer>
-        </>
-      )}
     </div>
   );
 }

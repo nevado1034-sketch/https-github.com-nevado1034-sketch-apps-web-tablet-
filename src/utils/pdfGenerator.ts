@@ -1,9 +1,11 @@
-import { RepairItem, RepairStatus } from "../types";
+import { RepairItem, RepairStatus, QcCheckItem } from "../types";
+import pdfLogo from "../assets/litio-logo-pdf.png";
 
-export function generateRepairPdf(repair: RepairItem) {
+export function buildRepairOrderHtml(repair: RepairItem): string {
+  const logoUrl = new URL(pdfLogo, window.location.origin).href;
   // Generate friendly names
   const branchNames: Record<string, string> = {
-    lince_arenales: "San Isidro (Arenales)",
+    lince_arenales: "Arenales (San Isidro)",
     surco: "Surco",
     san_borja: "San Borja",
     lince_leal: "José Leal (Lince)"
@@ -13,13 +15,16 @@ export function generateRepairPdf(repair: RepairItem) {
     mantenimiento: "Mantenimiento General",
     diagnostico: "Diagnóstico Especializado",
     garantia: "Servicio de Garantía",
-    cambio: "Cambio de Componentes"
+    cambio: "Cambio de Componentes",
+    express: "Servicio Express"
   };
 
   const vehicleNames: Record<string, string> = {
     scooter: "Scooter Eléctrico",
-    moto: "Moto Eléctrica",
     bici: "Bicicleta Eléctrica",
+    moto: "Moto Eléctrica",
+    bicimoto: "Bicimoto Eléctrica",
+    trimoto: "Trimoto / Moto-Taxi Eléctrico",
     otro: "Vehículo Eléctrico Especial"
   };
 
@@ -32,6 +37,37 @@ export function generateRepairPdf(repair: RepairItem) {
     ready: "Listo para Entrega",
     delivered: "Entregado (Servicio Completado)"
   };
+
+  const batteryLabels: Record<string, string> = {
+    optimo: "Óptimo",
+    regular: "Regular",
+    bajo: "Bajo",
+    no_carga: "No carga"
+  };
+
+  const cleanLabels: Record<string, string> = {
+    excelente: "Excelente",
+    buena: "Buena",
+    regular: "Regular",
+    pendiente: "Pendiente"
+  };
+
+  const qcItemBadge = (item?: QcCheckItem) =>
+    item && item.good
+      ? `<span class="qc-badge qc-ok">EN BUEN ESTADO</span>`
+      : `<span class="qc-badge qc-warn">PARA CAMBIO</span>`;
+
+  const qcYesNoBadge = (value: boolean) =>
+    value
+      ? `<span class="qc-badge qc-ok">SÍ</span>`
+      : `<span class="qc-badge qc-warn">NO</span>`;
+
+  const qcRow = (label: string, valueHtml: string) => `
+    <div class="qc-item">
+      <div class="qc-label">${label}</div>
+      <div class="qc-val">${valueHtml}</div>
+    </div>
+  `;
 
   const ticketNumber = `LE-${repair.id.slice(0, 8).toUpperCase()}`;
   const formattedDate = new Date(repair.receptionDate).toLocaleString("es-PE", {
@@ -48,15 +84,8 @@ export function generateRepairPdf(repair: RepairItem) {
   const remBalance = repair.payment?.remainingBalance ?? Math.max(0, estCost - advPayment);
   const finCost = repair.actualCost || estCost;
 
-  // Open printing window
-  const printWindow = window.open("", "_blank");
-  if (!printWindow) {
-    alert("Por favor habilita las ventanas emergentes (Pop-ups) para generar el PDF de conformidad.");
-    return;
-  }
-
   // Build the print layout document
-  printWindow.document.write(`
+  return `
     <!DOCTYPE html>
     <html lang="es">
     <head>
@@ -99,6 +128,19 @@ export function generateRepairPdf(repair: RepairItem) {
           border-bottom: 2px solid #0f172a;
           padding-bottom: 15px;
           margin-bottom: 20px;
+        }
+
+        .logo-container {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .pdf-logo {
+          height: 48px;
+          width: auto;
+          max-width: 220px;
+          object-fit: contain;
         }
 
         .logo-container h1 {
@@ -256,6 +298,86 @@ export function generateRepairPdf(repair: RepairItem) {
           margin-bottom: 20px;
         }
 
+        .qc-banner {
+          border-radius: 8px;
+          padding: 10px 12px;
+          margin-bottom: 12px;
+        }
+
+        .qc-approved {
+          background-color: #f0fdf4;
+          border: 1px solid #bbf7d0;
+          color: #166534;
+        }
+
+        .qc-rejected {
+          background-color: #fef2f2;
+          border: 1px solid #fecaca;
+          color: #991b1b;
+        }
+
+        .qc-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+          margin-bottom: 15px;
+        }
+
+        .qc-item {
+          border: 1px solid #e2e8f0;
+          border-radius: 6px;
+          padding: 8px 10px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .qc-label {
+          font-size: 9px;
+          font-weight: 600;
+          color: #475569;
+          text-transform: uppercase;
+        }
+
+        .qc-val {
+          font-size: 10px;
+          font-weight: 600;
+          color: #0f172a;
+          text-align: right;
+          white-space: nowrap;
+        }
+
+        .qc-badge {
+          display: inline-block;
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-size: 8px;
+          font-weight: 700;
+        }
+
+        .qc-ok {
+          background-color: #f0fdf4;
+          color: #166534;
+          border: 1px solid #bbf7d0;
+        }
+
+        .qc-warn {
+          background-color: #fef2f2;
+          color: #991b1b;
+          border: 1px solid #fecaca;
+        }
+
+        .qc-notes {
+          border: 1px solid #cbd5e1;
+          background-color: #f8fafc;
+          border-radius: 8px;
+          padding: 10px 12px;
+          font-size: 9.5px;
+          color: #475569;
+          margin-bottom: 15px;
+        }
+
         .photo-wrapper {
           border: 1px solid #e2e8f0;
           border-radius: 8px;
@@ -371,8 +493,11 @@ export function generateRepairPdf(repair: RepairItem) {
       <!-- HEADER BAR -->
       <div class="header-bar">
         <div class="logo-container">
-          <h1>LITIO ENERGY</h1>
-          <p>Especialistas en Vehículos Eléctricos y Micromovilidad</p>
+          <img src="${logoUrl}" class="pdf-logo" alt="Logo Litio Energy" />
+          <div>
+            <h1>LITIO ENERGY</h1>
+            <p>Especialistas en Vehículos Eléctricos y Micromovilidad</p>
+          </div>
         </div>
         <div class="document-title">
           <h2>CERTIFICADO DE CONFORMIDAD Y ORDEN DE SERVICIO</h2>
@@ -401,7 +526,7 @@ export function generateRepairPdf(repair: RepairItem) {
             <div class="info-val">${repair.client.email || "No registrado"}</div>
           </div>
           <div class="info-row">
-            <div class="info-label">DNI / RUC:</div>
+            <div class="info-label">DNI / C.E:</div>
             <div class="info-val">${repair.client.dni || "No registrado"}</div>
           </div>
           <div class="info-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1;">
@@ -433,7 +558,7 @@ export function generateRepairPdf(repair: RepairItem) {
             <div class="info-val font-mono">${repair.vehicle.voltage}</div>
           </div>
           <div class="info-row">
-            <div class="info-label">Estado Batería:</div>
+            <div class="info-label">Vida útil Batería:</div>
             <div class="info-val uppercase font-mono text-[9px]">${repair.vehicle.batteryCondition}</div>
           </div>
           <div class="info-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1;">
@@ -529,10 +654,41 @@ export function generateRepairPdf(repair: RepairItem) {
         </div>
       </div>
 
+      <!-- REPUESTOS / TRABAJOS DETECTADOS -->
+      ${repair.spareParts && repair.spareParts.length > 0 ? `
+        <div class="section-header">6. REPUESTOS / TRABAJOS DETECTADOS Y PRESUPUESTADOS</div>
+        <div class="info-card" style="margin-bottom: 20px; overflow-x: auto;">
+          <table style="width:100%; border-collapse: collapse; font-size: 10px;">
+            <thead>
+              <tr style="background-color:#f1f5f9; text-align:left;">
+                <th style="padding:6px 8px; border:1px solid #cbd5e1;">#</th>
+                <th style="padding:6px 8px; border:1px solid #cbd5e1;">Descripción del repuesto / trabajo</th>
+                <th style="padding:6px 8px; border:1px solid #cbd5e1;">Acción</th>
+                <th style="padding:6px 8px; border:1px solid #cbd5e1; text-align:right;">Repuesto (S/.)</th>
+                <th style="padding:6px 8px; border:1px solid #cbd5e1; text-align:right;">Mano de Obra (S/.)</th>
+                <th style="padding:6px 8px; border:1px solid #cbd5e1; text-align:right;">Total (S/.)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${repair.spareParts.map((sp, i) => `
+                <tr>
+                  <td style="padding:6px 8px; border:1px solid #e2e8f0;">${i + 1}</td>
+                  <td style="padding:6px 8px; border:1px solid #e2e8f0;">${sp.description}</td>
+                  <td style="padding:6px 8px; border:1px solid #e2e8f0; font-weight:600;">${sp.type === "cambio" ? "CAMBIAR" : "REPARAR"}</td>
+                  <td style="padding:6px 8px; border:1px solid #e2e8f0; text-align:right; font-family: monospace;">S/. ${(Number(sp.partPrice) || 0).toFixed(2)}</td>
+                  <td style="padding:6px 8px; border:1px solid #e2e8f0; text-align:right; font-family: monospace;">S/. ${(Number(sp.laborPrice) || 0).toFixed(2)}</td>
+                  <td style="padding:6px 8px; border:1px solid #e2e8f0; text-align:right; font-family: monospace; font-weight:700;">S/. ${((Number(sp.partPrice) || 0) + (Number(sp.laborPrice) || 0)).toFixed(2)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      ` : ""}
+
       <!-- COSTA Y PAGOS -->
       <div class="info-grid">
         <div class="info-card">
-          <div class="info-card-title">6. DESGLOSE ECONÓMICO Y FINANCIERO (S/.)</div>
+          <div class="info-card-title">7. DESGLOSE ECONÓMICO Y FINANCIERO (S/.)</div>
           <div class="info-row">
             <div class="info-label">Presupuesto Estimado:</div>
             <div class="info-val font-mono" style="font-weight: 600;">S/. ${estCost.toFixed(2)}</div>
@@ -559,7 +715,7 @@ export function generateRepairPdf(repair: RepairItem) {
       <!-- EVIDENCE PHOTOS SECTION -->
       ${repair.visualState.photos && repair.visualState.photos.length > 0 ? `
         <div class="page-break"></div>
-        <div class="section-header" style="margin-top: 10px;">7. REGISTRO FOTOGRÁFICO DE EVIDENCIA EN TABLET</div>
+        <div class="section-header" style="margin-top: 10px;">8. REGISTRO FOTOGRÁFICO DE EVIDENCIA EN TABLET</div>
         <div class="photos-gallery">
           ${repair.visualState.photos.map((photo, index) => `
             <div class="photo-wrapper">
@@ -567,6 +723,85 @@ export function generateRepairPdf(repair: RepairItem) {
               <div class="photo-label">Captura #${index + 1} - Memoria Tablet</div>
             </div>
           `).join("")}
+        </div>
+      ` : ""}
+
+      <!-- CONTROL DE CALIDAD FINAL -->
+      ${repair.qcReport && repair.qcReport.result !== "draft" ? `
+        <div class="section-header" style="margin-top: 10px;">9. CONTROL DE CALIDAD FINAL</div>
+        <div class="qc-banner ${repair.qcReport.result === "approved" ? "qc-approved" : "qc-rejected"}">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <strong style="font-size: 11px; text-transform: uppercase;">
+              ${repair.qcReport.result === "approved" ? "✅ VEHÍCULO APROBADO PARA ENTREGA" : "❌ VEHÍCULO RECHAZADO — VOLVER A REPARACIÓN"}
+            </strong>
+            <span style="font-size: 9px; font-family: monospace;">
+              ${repair.qcReport.reviewedAt ? new Date(repair.qcReport.reviewedAt).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" }) : ""}
+            </span>
+          </div>
+          <div style="font-size: 10px; margin-top: 4px;">
+            Revisado por: <strong>${repair.qcReport.reviewedBy || "Control de Calidad"}</strong>
+          </div>
+        </div>
+        <div class="qc-grid">
+          ${qcRow("Nivel de batería", batteryLabels[repair.qcReport.batteryLevel] || repair.qcReport.batteryLevel)}
+          ${qcRow("Kilometraje", `${repair.qcReport.mileageKm || 0} km`)}
+          ${qcRow("Velocidad mínima", `${repair.qcReport.minSpeedKmh || 0} km/h`)}
+          ${qcRow("Velocidad máxima", `${repair.qcReport.maxSpeedKmh || 0} km/h`)}
+          ${qcRow("Avería resuelta", qcYesNoBadge(repair.qcReport.faultResolved))}
+          ${qcRow("Limpieza del vehículo", cleanLabels[repair.qcReport.cleanliness] || repair.qcReport.cleanliness)}
+          ${qcRow("Tiempo de carga", repair.qcReport.chargingTimeMin ? `${repair.qcReport.chargingTimeMin} min` : "—")}
+          ${qcRow("Voltaje final", repair.qcReport.finalVoltage || "—")}
+        </div>
+        <div class="section-header" style="font-size: 9px; padding: 4px 10px; background-color: #334155;">FRENOS Y LLANTAS</div>
+        <div class="qc-grid">
+          ${qcRow("Freno delantero", qcItemBadge(repair.qcReport.frontBrake))}
+          ${qcRow("Freno posterior", qcItemBadge(repair.qcReport.rearBrake))}
+          ${qcRow("Llantas delanteras", qcItemBadge(repair.qcReport.frontTires))}
+          ${qcRow("Llantas traseras", qcItemBadge(repair.qcReport.rearTires))}
+          ${qcRow("Suspensión", qcItemBadge(repair.qcReport.suspension))}
+        </div>
+        <div class="section-header" style="font-size: 9px; padding: 4px 10px; background-color: #334155;">RAMAL Y SISTEMA ELÉCTRICO</div>
+        <div class="qc-grid">
+          ${qcRow("Ramal eléctrico", qcItemBadge(repair.qcReport.electricHarness))}
+          ${qcRow("Ramal del motor", qcItemBadge(repair.qcReport.motorHarness))}
+          ${qcRow("Faros delanteros", qcItemBadge(repair.qcReport.headlights))}
+          ${qcRow("Luz de freno posterior", qcItemBadge(repair.qcReport.rearLight))}
+          ${qcRow("Bocina", qcItemBadge(repair.qcReport.horn))}
+          ${qcRow("Espejos", qcItemBadge(repair.qcReport.mirrors))}
+        </div>
+        <div class="section-header" style="font-size: 9px; padding: 4px 10px; background-color: #334155;">DIRECCIONALES</div>
+        <div class="qc-grid">
+          ${qcRow("Direccionales", qcYesNoBadge(repair.qcReport.turnSignals))}
+          ${qcRow("Luces derecha", qcItemBadge(repair.qcReport.rightTurnLight))}
+          ${qcRow("Luces izquierda", qcItemBadge(repair.qcReport.leftTurnLight))}
+        </div>
+        ${repair.qcReport.notes ? `
+          <div class="qc-notes">
+            <strong style="text-transform: uppercase; font-size: 9px;">Observaciones del Control de Calidad:</strong><br/>
+            ${repair.qcReport.notes}
+          </div>
+        ` : ""}
+      ` : ""}
+
+      <!-- ENTREGA AL CLIENTE -->
+      ${repair.status === "delivered" && repair.deliveredAt ? `
+        <div class="section-header" style="margin-top: 10px;">10. ENTREGA AL CLIENTE</div>
+        <div style="border: 1px dashed #0f766e; border-radius: 8px; padding: 12px; margin-top: 8px; background-color: #f0fdfa; display: flex; justify-content: space-between; align-items: center; gap: 15px; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 200px;">
+            <div style="font-size: 9px; text-transform: uppercase; color: #0f766e; font-weight: 700;">Fecha y hora de entrega</div>
+            <div style="font-size: 12px; font-weight: 700; color: #0f172a; margin-top: 4px;">
+              ${new Date(repair.deliveredAt).toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" })}
+            </div>
+            <div style="font-size: 10px; color: #475569; margin-top: 2px;">
+              Recibido conforme por: <strong>${repair.deliverySignatureName || repair.client.name}</strong>
+            </div>
+          </div>
+          ${repair.deliverySignature ? `
+            <div style="text-align: center;">
+              <div style="font-size: 9px; text-transform: uppercase; color: #0f766e; font-weight: 700;">Firma de Entrega</div>
+              <img src="${repair.deliverySignature}" class="signature-img" alt="Firma de Entrega del Cliente" style="max-height: 70px; max-width: 180px; object-fit: contain;" />
+            </div>
+          ` : ""}
         </div>
       ` : ""}
 
@@ -628,7 +863,16 @@ export function generateRepairPdf(repair: RepairItem) {
 
     </body>
     </html>
-  `);
+  `;
+}
 
+export function generateRepairPdf(repair: RepairItem) {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    alert("Por favor habilita las ventanas emergentes (Pop-ups) para generar el PDF de conformidad.");
+    return;
+  }
+
+  printWindow.document.write(buildRepairOrderHtml(repair));
   printWindow.document.close();
 }

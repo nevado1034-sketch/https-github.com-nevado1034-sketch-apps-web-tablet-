@@ -6,41 +6,36 @@ import {
   Layers, 
   Sparkles, 
   CheckSquare, 
-  Clock, 
-  DollarSign, 
-  ChevronRight, 
   AlertTriangle, 
-  FileText, 
-  RotateCw, 
-  AlertCircle,
-  Truck,
-  CheckCircle,
-  Play,
   Tv,
   ArrowRight,
   MapPin,
-  Tag,
-  Lock,
-  Battery,
   Video,
   Camera,
-  Check,
-  Activity,
-  AlertOctagon,
-  TrendingUp,
-  Search,
-  Printer
+  CheckCircle,
+  Plus,
+  X,
+  Package,
+  Stethoscope,
+  Trash2
 } from "lucide-react";
-import { RepairItem, RepairStatus, HistoryLog, WorkshopBranch, ServiceType, PaymentMethod } from "../types";
-import { generateRepairPdf } from "../utils/pdfGenerator";
-import { SignaturePad } from "./TabletHelpers";
+import { RepairItem, RepairStatus, HistoryLog, WorkshopBranch, ServiceType, PaymentMethod, SparePart } from "../types";
+import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
+import litioLogo from "../assets/litio-logo.png";
 
 interface TechnicianViewProps {
   repairs: RepairItem[];
   onUpdateRepair: (id: string, updateData: any) => Promise<void>;
   isLoading: boolean;
-  userBranch?: string;
+  userLocalKey?: string;
 }
+
+const BRANCH_SHORT_LABELS: Record<string, string> = {
+  lince_arenales: "S. Isidro",
+  surco: "Surco",
+  san_borja: "S. Borja",
+  lince_leal: "Leal"
+};
 
 const STATUS_COLUMNS: Array<{ id: RepairStatus; label: string; bg: string; text: string; border: string }> = [
   { id: "receptioned", label: "En Cola / Recibidos", bg: "bg-slate-800/40", text: "text-slate-200", border: "border-slate-700/60" },
@@ -51,29 +46,63 @@ const STATUS_COLUMNS: Array<{ id: RepairStatus; label: string; bg: string; text:
   { id: "ready", label: "Listo para Entrega", bg: "bg-emerald-950/20", text: "text-emerald-400", border: "border-emerald-900/40" }
 ];
 
-export default function TechnicianView({ repairs, onUpdateRepair, isLoading, userBranch }: TechnicianViewProps) {
+export default function TechnicianView({ repairs, onUpdateRepair, isLoading, userLocalKey }: TechnicianViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(repairs[0]?.id || null);
-  const [technicianName, setTechnicianName] = useState("Carlos Mendoza");
+  const [technicianName, setTechnicianName] = useState("");
   
   // TV & Workshop Wide Screen TV states
   const [isTvMode, setIsTvMode] = useState(false);
-  const [tvFilterBranch, setTvFilterBranch] = useState<string>(userBranch || "all");
+  const [tvFilterBranch, setTvFilterBranch] = useState<string>(userLocalKey || "all");
   const [currentTime, setCurrentTime] = useState(new Date());
 
   // Local edit states for the selected vehicle workspace
   const [techNotes, setTechNotes] = useState("");
-  const [actualCost, setActualCost] = useState("");
   const [techSignature, setTechSignature] = useState("");
   const [completedProcedures, setCompletedProcedures] = useState<Record<string, boolean>>({});
 
+  // Modal de entrega: confirmación + firma del cliente al recibir el vehículo
+  const [showDeliveryModal, setShowDeliveryModal] = useState(false);
+  const [deliveryClientName, setDeliveryClientName] = useState("");
+  const [deliverySignature, setDeliverySignature] = useState("");
+
+  // Repuestos detectados por el técnico en el diagnóstico
+  const [spareParts, setSpareParts] = useState<SparePart[]>([]);
+  const [newPartDesc, setNewPartDesc] = useState("");
+  const [newPartType, setNewPartType] = useState<"reparacion" | "cambio">("reparacion");
+
+  // Modo de trabajo del técnico: Diagnóstico (recién ingresados) o Reparación (taller completo)
+  const [techMode, setTechMode] = useState<"diagnostico" | "reparacion">("diagnostico");
+
+  // Fotos y videos tomados durante el diagnóstico técnico
+  const [diagPhotos, setDiagPhotos] = useState<string[]>([]);
+  const [diagVideos, setDiagVideos] = useState<RecordedVideo[]>([]);
+
   const activeRepair = repairs.find(r => r.id === selectedId);
+
+  // En modo Diagnóstico, preselecciona automáticamente el primer vehículo recién ingresado
+  // si la selección actual ya no corresponde a la cola de diagnóstico.
+  React.useEffect(() => {
+    if (techMode === "diagnostico") {
+      const queue = repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing");
+      const isCurrentInQueue = selectedId && queue.some(r => r.id === selectedId);
+      if (queue.length > 0 && !isCurrentInQueue) {
+        setSelectedId(queue[0].id);
+      } else if (queue.length === 0 && selectedId) {
+        setSelectedId(null);
+      }
+    }
+  }, [techMode, repairs, selectedId]);
 
   // Sync state whenever active repair changes
   React.useEffect(() => {
     if (activeRepair) {
       setTechNotes(activeRepair.technicianNotes || "");
-      setActualCost(String(activeRepair.actualCost || activeRepair.estimatedCost || 0));
       setTechSignature(activeRepair.technicianSignature || "");
+      setSpareParts(activeRepair.spareParts || []);
+      setNewPartDesc("");
+      setNewPartType("reparacion");
+      setDiagPhotos(activeRepair.visualState.photos || []);
+      setDiagVideos([]);
       // Reset procedures check
       setCompletedProcedures({});
     }
@@ -92,10 +121,14 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     }));
   };
 
-  const handleUpdateStatus = async (newStatus: RepairStatus) => {
+  const handleUpdateStatus = async (newStatus: RepairStatus, extra?: Record<string, any>) => {
     if (!activeRepair) return;
 
     if (newStatus === "ready" || newStatus === "delivered") {
+      if (activeRepair.qcReport?.result !== "approved") {
+        alert("Esta orden primero debe pasar por Control de Calidad. La jefa del local debe aprobar la revisión antes de marcarla como Lista o Entregada.");
+        return;
+      }
       if (!technicianName || !technicianName.trim()) {
         alert("¡Nombre de Técnico requerido! Por favor, ingrese su nombre de técnico responsable para poder marcar el vehículo como Listo o Entregado.");
         return;
@@ -109,10 +142,11 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     const payload = {
       status: newStatus,
       technicianNotes: techNotes,
-      actualCost: Number(actualCost) || 0,
+      actualCost: activeRepair.actualCost || 0,
       technicianName: `Téc. ${technicianName}`,
       technicianSignature: techSignature,
-      technicianSignatureName: `Téc. ${technicianName}`
+      technicianSignatureName: `Téc. ${technicianName}`,
+      ...(extra || {})
     };
 
     try {
@@ -128,7 +162,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     
     const payload = {
       technicianNotes: techNotes,
-      actualCost: Number(actualCost) || 0,
+      actualCost: activeRepair.actualCost || 0,
       technicianName: `Téc. ${technicianName}`,
       technicianSignature: techSignature,
       technicianSignatureName: `Téc. ${technicianName}`
@@ -141,6 +175,82 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       console.error(err);
       alert("Error al guardar notas de taller.");
     }
+  };
+
+  const addSparePart = () => {
+    const desc = newPartDesc.trim();
+    if (!desc) return;
+    const part: SparePart = {
+      id: `part_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      description: desc,
+      type: newPartType
+    };
+    setSpareParts((prev) => [...prev, part]);
+    setNewPartDesc("");
+  };
+
+  const removeSparePart = (id: string) => {
+    setSpareParts((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const handleSaveSpareParts = async () => {
+    if (!activeRepair) return;
+    const clean = spareParts.filter((p) => p.description.trim());
+    if (clean.length === 0) {
+      alert("Agrega al menos un repuesto o trabajo detectado.");
+      return;
+    }
+    try {
+      await onUpdateRepair(activeRepair.id, {
+        spareParts: clean,
+        technicianName: `Téc. ${technicianName}`
+      });
+      alert("Repuestos/trabajos guardados. La jefa del local podrá colocar el presupuesto.");
+    } catch (err) {
+      console.error(err);
+      alert("Error al guardar los repuestos.");
+    }
+  };
+
+  // Guarda el diagnóstico completo del técnico: notas, repuestos, fotos y videos.
+  // Además pasa el vehículo de "Recepción" a "En Diagnóstico" automáticamente.
+  const handleSaveDiagnosis = async () => {
+    if (!activeRepair) return;
+    const clean = spareParts.filter((p) => p.description.trim());
+
+    const payload: any = {
+      technicianNotes: techNotes,
+      spareParts: clean,
+      technicianName: `Téc. ${technicianName}`,
+      visualState: {
+        ...activeRepair.visualState,
+        photos: diagPhotos,
+        photosTaken: diagPhotos.length > 0
+      },
+      videoEvidenceBlobs: diagVideos
+    };
+
+    if (activeRepair.status === "receptioned") {
+      payload.status = "diagnosing";
+    }
+
+    try {
+      await onUpdateRepair(activeRepair.id, payload);
+      setDiagVideos([]);
+      alert(
+        clean.length > 0
+          ? "Diagnóstico guardado. El vehículo pasó a 'En Diagnóstico' y la jefa ya puede armar el presupuesto."
+          : "Diagnóstico guardado (notas, fotos y videos). El vehículo pasó a 'En Diagnóstico'."
+      );
+    } catch (err) {
+      console.error(err);
+      alert("Error al guardar el diagnóstico.");
+    }
+  };
+
+  // Sincroniza las fotos del diagnóstico con el estado visual del vehículo
+  const handleDiagPhotosChange = (updated: string[]) => {
+    setDiagPhotos(updated);
   };
 
   // One-click change of status directly from the TV card step indicators
@@ -156,8 +266,16 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     };
 
     if (newStatus === "ready" || newStatus === "delivered") {
+      if (item.qcReport?.result !== "approved") {
+        alert("Esta orden primero debe pasar por Control de Calidad. La jefa del local debe aprobar la revisión antes de marcarla como Lista o Entregada.");
+        return;
+      }
       if (!item.technicianSignature) {
         alert(`Para cambiar el estado de la orden a ${statusLabels[newStatus]}, es obligatorio registrar el nombre y firma del técnico responsable. Por favor, realice este proceso desde el panel de detalles del taller.`);
+        return;
+      }
+      if (newStatus === "delivered") {
+        alert("La entrega del vehículo debe registrarse desde el panel de taller: la jefa del local entrega el vehículo y el cliente firma la conformidad. No se puede entregar directamente desde el Monitor TV.");
         return;
       }
     }
@@ -189,17 +307,19 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
 
   const getVehicleIcon = (type: string) => {
     switch (type) {
-      case "scooter": return "🛴";
-      case "moto": return "🏍️";
-      case "bici": return "🚲";
-      default: return "🔋";
+      case "scooter": return "�x:�";
+      case "bici": return "�xa�";
+      case "moto": return "�x��️";
+      case "bicimoto": return "�x:�";
+      case "trimoto": return "�x:�";
+      default: return "�x9";
     }
   };
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
       
-      {/* SECTOR DE SESIÓN DE TÉCNICO Y ACCESO A MODO TV */}
+      {/* SECTOR DE SESI�N DE T�0CNICO Y ACCESO A MODO TV */}
       <div className="mb-6 bg-slate-900 border border-slate-800 text-white p-5 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center space-x-3.5">
           <div className="p-3 bg-cyan-500/10 rounded-xl border border-cyan-500/30 text-cyan-400">
@@ -207,10 +327,10 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
           </div>
           <div>
             <h2 className="font-display font-black text-lg text-slate-100 tracking-tight flex items-center space-x-2">
-              <span>ESTACIÓN DE TRABAJO TÉCNICO</span>
+              <span>ZONA DE TRABAJO TÉCNICO</span>
               <span className="text-[10px] uppercase font-mono bg-cyan-950 text-cyan-400 border border-cyan-800/40 px-2 py-0.5 rounded-full font-bold">Litio Energy v2.1</span>
             </h2>
-            <p className="text-xs text-slate-400 mt-0.5">Controla las colas de reparación, pautas de diagnóstico IA, estado de pagos e inspección de vehículos.</p>
+            <p className="text-xs text-slate-400 mt-0.5">Controla las colas de reparación, las fallas reportadas y la pauta de diagnóstico IA de cada vehículo.</p>
           </div>
         </div>
 
@@ -226,22 +346,63 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
             }`}
           >
             <Tv className="w-4 h-4" />
-            <span>{isTvMode ? "📺 Vista Normal" : "📺 Activar Vista TV (Televisor)"}</span>
+            <span>{isTvMode ? "Salir de Vista TV" : "Activar Vista TV"}</span>
           </button>
 
           <div className="flex items-center space-x-2 bg-slate-950/40 p-1.5 rounded-xl border border-slate-800">
             <span className="text-xs text-slate-500 pl-1.5 font-bold uppercase tracking-wider">Técnico:</span>
-            <select
+            <input
+              type="text"
               value={technicianName}
               onChange={e => setTechnicianName(e.target.value)}
-              className="bg-slate-900 border border-slate-800 text-white rounded-lg px-2.5 py-1 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-cyan-500/30"
-            >
-              <option value="Carlos Mendoza">Carlos Mendoza (Controladoras)</option>
-              <option value="Sandra Rojas">Sandra Rojas (Baterías)</option>
-              <option value="Alberto Gómez">Alberto Gómez (Motores y Fases)</option>
-            </select>
+              placeholder="Nombre del técnico"
+              className="bg-slate-900 border border-slate-800 text-white placeholder:text-slate-600 rounded-lg px-2.5 py-1 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-cyan-500/30 w-44"
+            />
           </div>
         </div>
+      </div>
+
+      {/* SELECTOR DE MODO: DIAGN�STICO (VEH�CULOS QUE ACABAN DE INGRESAR) / REPARACI�N (TALLER COMPLETO) */}
+      <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <button
+          type="button"
+          onClick={() => setTechMode("diagnostico")}
+          className={`relative flex flex-col items-center justify-center p-4 rounded-2xl border-2 transition-all group ${
+            techMode === "diagnostico"
+              ? "bg-cyan-500/15 border-cyan-500 shadow-[0_0_20px_rgba(6,182,212,0.25)]"
+              : "bg-slate-900 border-slate-800 hover:border-cyan-500/40"
+          }`}
+        >
+          <div className={`p-3 rounded-xl ${techMode === "diagnostico" ? "bg-cyan-500 text-slate-950" : "bg-slate-950 text-cyan-400 border border-cyan-800/40"}`}>
+            <Stethoscope className="w-6 h-6" />
+          </div>
+          <span className={`mt-2 font-display font-black text-sm uppercase tracking-wider ${techMode === "diagnostico" ? "text-cyan-400" : "text-slate-300"}`}>
+            Diagnóstico
+          </span>
+          <span className="text-[10px] text-slate-500 font-mono mt-0.5">
+            {repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing").length} vehículos recién ingresados
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setTechMode("reparacion")}
+          className={`relative flex flex-col items-center justify-center p-4 rounded-2xl border-2 transition-all group ${
+            techMode === "reparacion"
+              ? "bg-blue-500/15 border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.25)]"
+              : "bg-slate-900 border-slate-800 hover:border-blue-500/40"
+          }`}
+        >
+          <div className={`p-3 rounded-xl ${techMode === "reparacion" ? "bg-blue-500 text-slate-950" : "bg-slate-950 text-blue-400 border border-blue-800/40"}`}>
+            <Wrench className="w-6 h-6" />
+          </div>
+          <span className={`mt-2 font-display font-black text-sm uppercase tracking-wider ${techMode === "reparacion" ? "text-blue-400" : "text-slate-300"}`}>
+            Reparación
+          </span>
+          <span className="text-[10px] text-slate-500 font-mono mt-0.5">
+            {repairs.filter(r => r.status !== "receptioned" && r.status !== "diagnosing" && r.status !== "delivered").length} vehículos en taller
+          </span>
+        </button>
       </div>
 
       {/* RENDER CONDICIONAL: 1. MODO TV (PANTALLA DE TELEVISOR DE TALLER) */}
@@ -251,8 +412,13 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
           {/* Header Superior del Monitor de TV */}
           <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-cyan-950/30 border border-slate-800 p-5 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-2xl">
             <div className="flex items-center space-x-4">
-              <div className="w-12 h-12 bg-cyan-500 rounded-xl flex items-center justify-center font-display font-black text-slate-950 text-xl tracking-tight shadow-md select-none">
-                LE
+              <div className="flex items-center justify-center overflow-hidden drop-shadow-[0_0_12px_rgba(6,182,212,0.4)] shrink-0">
+                <img
+                  src={litioLogo}
+                  alt="Isotipo Litio Energy"
+                  className="w-16 h-16 object-contain"
+                  draggable={false}
+                />
               </div>
               <div>
                 <h1 className="font-display font-black text-2xl text-white tracking-tight flex items-center gap-2">
@@ -267,18 +433,23 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
             <div className="flex items-center space-x-3 bg-slate-950 px-4 py-2 rounded-xl border border-slate-800">
               <MapPin className="w-4 h-4 text-cyan-400" />
               <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Sede TV:</span>
-              <select
-                value={tvFilterBranch}
-                onChange={e => setTvFilterBranch(e.target.value)}
-                disabled={!!userBranch}
-                className="bg-transparent text-slate-200 text-xs font-black focus:outline-none disabled:opacity-70 disabled:cursor-not-allowed"
-              >
-                {!userBranch && <option value="all" className="bg-slate-950 text-slate-200">Todas las sedes</option>}
-                <option value="lince_arenales" className="bg-slate-950 text-slate-200">San Isidro (Arenales)</option>
-                <option value="surco" className="bg-slate-950 text-slate-200">Surco</option>
-                <option value="san_borja" className="bg-slate-950 text-slate-200">San Borja</option>
-                <option value="lince_leal" className="bg-slate-950 text-slate-200">Lince (Jose Leal)</option>
-              </select>
+              {userLocalKey ? (
+                <span className="text-slate-200 text-xs font-black">
+                  {tvFilterBranch === "lince_arenales" ? "San Isidro (Arenales)" : tvFilterBranch === "surco" ? "Surco" : tvFilterBranch === "san_borja" ? "San Borja" : tvFilterBranch === "lince_leal" ? "Lince (Jose Leal)" : "Todas las sedes"}
+                </span>
+              ) : (
+                <select
+                  value={tvFilterBranch}
+                  onChange={e => setTvFilterBranch(e.target.value)}
+                  className="bg-transparent text-slate-200 text-xs font-black focus:outline-none"
+                >
+                  <option value="all" className="bg-slate-950 text-slate-200">Todas las sedes</option>
+                  <option value="lince_arenales" className="bg-slate-950 text-slate-200">San Isidro (Arenales)</option>
+                  <option value="surco" className="bg-slate-950 text-slate-200">Surco</option>
+                  <option value="san_borja" className="bg-slate-950 text-slate-200">San Borja</option>
+                  <option value="lince_leal" className="bg-slate-950 text-slate-200">Lince (Jose Leal)</option>
+                </select>
+              )}
             </div>
 
             {/* ticking clock of TV Screen */}
@@ -287,7 +458,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                 {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
               </div>
               <span className="bg-emerald-950 border border-emerald-500/25 text-emerald-400 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest font-mono animate-pulse">
-                ● LIVE MONITOR
+                �� LIVE MONITOR
               </span>
             </div>
           </div>
@@ -323,7 +494,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
           {/* Grid de 3 Columnas Gigantes para Televisor */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
-            {/* COLUMNA 1: RECEPCIONADOS Y DIAGNÓSTICO */}
+            {/* COLUMNA 1: RECEPCIONADOS Y DIAGN�STICO */}
             <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
               <div className="flex items-center justify-between border-b border-slate-850 pb-2.5">
                 <div className="flex items-center space-x-2">
@@ -352,7 +523,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
               </div>
             </div>
 
-            {/* COLUMNA 2: ESPERANDO REPUESTO / REPARACIÓN / PRUEBAS */}
+            {/* COLUMNA 2: ESPERANDO REPUESTO / REPARACI�N / PRUEBAS */}
             <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
               <div className="flex items-center justify-between border-b border-slate-850 pb-2.5">
                 <div className="flex items-center space-x-2">
@@ -412,9 +583,341 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
 
           </div>
         </div>
+      ) : techMode === "diagnostico" ? (
+        
+        // RENDER 1b: DIAGNOSTICO DEL TECNICO (VEHICULOS QUE ACABAN DE INGRESAR)
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start animate-fade-in">
+          
+          {/* COLA DE DIAGNOSTICO (5 COLS): SOLO VEHICULOS RECIEN INGRESADOS */}
+          <div className="lg:col-span-5 space-y-4">
+            <div className="bg-slate-900 rounded-2xl border border-slate-800 p-5 text-white">
+              <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
+                <div className="flex items-center space-x-2">
+                  <Stethoscope className="w-4 h-4 text-cyan-400" />
+                  <h3 className="font-display font-bold text-sm uppercase tracking-wider text-slate-300">Vehículos por Diagnosticar</h3>
+                </div>
+                <span className="text-xs bg-cyan-950 text-cyan-400 px-2.5 py-1 rounded-full font-mono font-bold border border-cyan-800/40">
+                  {repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing").length}
+                </span>
+              </div>
+
+              <div className="space-y-3 max-h-[700px] overflow-y-auto pr-1">
+                {repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing").length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-600 italic">
+                    No hay vehículos recién ingresados. En cuanto la recepción registre un vehículo, aparecerá automáticamente aquí.
+                  </div>
+                ) : (
+                  repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing").map(rep => {
+                    const isSelected = rep.id === selectedId;
+                    const isDiagnosing = rep.status === "diagnosing";
+                    return (
+                      <div
+                        key={rep.id}
+                        onClick={() => setSelectedId(rep.id)}
+                        className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                          isSelected
+                            ? "bg-slate-800/80 border-cyan-500/80 shadow-[0_0_12px_rgba(6,182,212,0.15)] text-white"
+                            : "bg-slate-900/40 border-slate-800/80 text-slate-400 hover:bg-slate-800/30 hover:text-slate-300"
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div className="space-y-1">
+                            <div className="flex items-center space-x-1.5">
+                              <span className="font-mono font-bold text-xs text-white bg-slate-950 px-1.5 py-0.5 rounded border border-slate-850">{rep.id}</span>
+                              <span className={`text-xs font-black ${isSelected ? "text-cyan-300" : "text-slate-300"}`}>{rep.client.name}</span>
+                            </div>
+                            <p className="text-xs">
+                              {getVehicleIcon(rep.vehicle.type)} <strong className="text-slate-200">{rep.vehicle.brand}</strong> {rep.vehicle.model}
+                            </p>
+                            <div className="flex flex-wrap gap-1 mt-1.5">
+                              <span className="text-[9px] bg-slate-950 text-slate-400 px-1.5 py-0.2 rounded font-mono font-bold uppercase">
+                                {BRANCH_SHORT_LABELS[rep.workshopBranch || "lince_arenales"] || "Lince"}
+                              </span>
+                              {isDiagnosing && (
+                                <span className="text-[9px] bg-cyan-950 text-cyan-400 px-1.5 py-0.2 rounded font-mono font-bold uppercase animate-pulse">
+                                  ● En Diagnóstico
+                                </span>
+                              )}
+                              {(rep.spareParts?.length || 0) > 0 && (
+                                <span className="text-[9px] bg-amber-950 text-amber-400 px-1.5 py-0.2 rounded font-mono font-bold uppercase">
+                                  {rep.spareParts!.length} repuestos
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-right flex flex-col items-end justify-between self-stretch">
+                            <p className="text-[10px] text-slate-500 font-mono">
+                              {new Date(rep.receptionDate).toLocaleDateString([], { day: '2-digit', month: '2-digit' })}
+                            </p>
+                            <p className="text-[10px] text-slate-500 font-mono">Recién ingresado</p>
+                          </div>
+                        </div>
+                        
+                        {rep.vehicle.reportedFailure && (
+                          <p className="text-[10px] text-cyan-200/80 truncate mt-2 italic bg-cyan-950/20 p-1.5 rounded border border-cyan-900/30">
+                            "Falla: {rep.vehicle.reportedFailure}"
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* PANEL DE DIAGNOSTICO TECNICO (7 COLS) */}
+          <div className="lg:col-span-7">
+            {activeRepair && (activeRepair.status === "receptioned" || activeRepair.status === "diagnosing") ? (
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl overflow-hidden animate-fade-in">
+                {/* Header de Detalle */}
+                <div className="bg-slate-950 text-white p-6 border-b border-slate-850 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="bg-cyan-500 text-slate-950 font-mono font-black px-2.5 py-1 rounded text-sm tracking-wider">
+                        {activeRepair.id}
+                      </span>
+                      <span className="text-slate-700">/</span>
+                      <h2 className="font-display font-black text-xl text-slate-100 tracking-tight">
+                        {activeRepair.vehicle.brand} {activeRepair.vehicle.model}
+                      </h2>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Cliente: <strong className="text-slate-200">{activeRepair.client.name}</strong>
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-4 md:items-end">
+                    <div className="flex flex-col items-start md:items-end">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-1">Estado</span>
+                      <div className="flex items-center space-x-1">
+                        <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse mr-1.5"></span>
+                        <span className="text-sm font-bold text-cyan-400 font-display uppercase tracking-wide">
+                          {activeRepair.status === "diagnosing" ? "En Diagnóstico" : "Recién Ingresado"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Contenido Detallado */}
+                <div className="p-6 space-y-6">
+                  
+                  {/* FICHA TECNICA DEL CLIENTE PARA EL DIAGNOSTICO (solo el tecnico ve nombre y falla) */}
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 text-xs">
+                    <h4 className="font-bold text-cyan-400 uppercase tracking-wider mb-2 flex items-center space-x-1.5">
+                      <User className="w-3.5 h-3.5" />
+                      <span>Datos Técnicos para el Diagnóstico</span>
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <p className="text-slate-300"><strong>Cliente:</strong> <span className="text-white font-bold">{activeRepair.client.name}</span></p>
+                        <p className="text-slate-300"><strong>Teléfono:</strong> {activeRepair.client.phone}</p>
+                        <p className="text-slate-300"><strong>Tipo de Vehículo:</strong> {activeRepair.vehicle.type.toUpperCase()}</p>
+                        <p className="text-slate-300"><strong>Marca / Modelo:</strong> {activeRepair.vehicle.brand} {activeRepair.vehicle.model}</p>
+                        <p className="text-slate-300"><strong>Voltaje:</strong> {activeRepair.vehicle.voltage}</p>
+                        <p className="text-slate-300"><strong>Vida útil Batería:</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "Arenales (San Isidro)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
+                        <p className="text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{activeRepair.serviceType === "mantenimiento" ? "Mantenimiento" : activeRepair.serviceType === "diagnostico" ? "Diagnóstico" : activeRepair.serviceType === "garantia" ? "Garantía" : activeRepair.serviceType === "cambio" ? "Cambio de Repuesto" : activeRepair.serviceType === "express" ? "Servicio Express" : "Diagnóstico"}</span></p>
+                        <p className="text-slate-300"><strong>Accesorios:</strong> {[
+                          activeRepair.accessories.charger ? "Cargador" : null,
+                          activeRepair.accessories.key ? "Llaves" : null,
+                          activeRepair.accessories.battery ? "Batería Extra" : null,
+                          activeRepair.accessories.helmet ? "Casco" : null,
+                          activeRepair.accessories.padlock ? "Candado" : null,
+                          activeRepair.accessories.others ? activeRepair.accessories.others : null
+                        ].filter(Boolean).join(", ") || "Ninguno"}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* FALLA REPORTADA DESTACADA (solo la ve el tecnico) */}
+                  <div className="bg-rose-950/20 border border-rose-500/30 rounded-xl p-4">
+                    <p className="text-[10px] uppercase font-black tracking-widest text-rose-400 mb-1.5 flex items-center space-x-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>Falla reportada por la que llega</span>
+                    </p>
+                    <p className="text-sm text-slate-100 font-semibold leading-relaxed">
+                      "{activeRepair.vehicle.reportedFailure}"
+                    </p>
+                  </div>
+
+                  {/* FOTOS Y VIDEOS DEL DIAGNOSTICO (BOTONES ACTIVADOS) */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <h3 className="font-bold text-sm text-slate-100 uppercase tracking-wider font-display flex items-center space-x-2">
+                        <Camera className="w-4 h-4 text-cyan-400" />
+                        <span>Evidencia del Diagnóstico</span>
+                      </h3>
+                      <span className="text-[10px] text-slate-500">Fotos y videos del estado detectado</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <PhotoManager
+                        photos={diagPhotos}
+                        onPhotosChange={handleDiagPhotosChange}
+                        title="Fotos del Diagnóstico Técnico"
+                        subtitle="Captura o sube las fotos del estado interno del vehículo que sustentan tu diagnóstico."
+                        storageBadge="MEMORIA TECNICO"
+                      />
+
+                      <div className="space-y-3">
+                        <VideoRecorder
+                          onRecorded={(v) => setDiagVideos(prev => [...prev, v])}
+                          branchLabel={BRANCH_SHORT_LABELS[activeRepair.workshopBranch] || "Taller"}
+                        />
+
+                        {diagVideos.length > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] uppercase font-black text-slate-500 tracking-wider">
+                              Videos de diagnóstico pendientes ({diagVideos.length})
+                            </p>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                              {diagVideos.map((v, idx) => (
+                                <div
+                                  key={idx}
+                                  className="relative flex flex-col items-center justify-center gap-1 rounded-lg border border-cyan-800/40 bg-slate-950 p-3 text-center"
+                                >
+                                  <Video className="w-5 h-5 text-cyan-400" />
+                                  <span className="text-[9px] font-mono text-slate-400">
+                                    {v.durationSec}s · {(v.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setDiagVideos(prev => prev.filter((_, i) => i !== idx))}
+                                    className="absolute top-1 right-1 p-1 bg-slate-950/80 border border-slate-800 text-rose-400 hover:text-rose-300 rounded-md"
+                                    title="Quitar video"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* RELACION DE REPUESTOS POR CAMBIAR / REPARAR + OBSERVACION */}
+                  <div className="pt-2 border-t border-slate-850 text-xs">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="flex items-center space-x-1.5 text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                        <Package className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Repuestos / Trabajos que necesita el vehículo</span>
+                      </label>
+                      <span className="text-[10px] text-slate-500">
+                        La jefa del local colocará el precio
+                      </span>
+                    </div>
+
+                    {spareParts.length > 0 && (
+                      <ul className="space-y-1.5 mb-2">
+                        {spareParts.map((p) => (
+                          <li key={p.id} className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
+                            <div className="flex items-center space-x-2 min-w-0">
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide shrink-0 ${p.type === "cambio" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : "bg-blue-500/15 text-blue-400 border border-blue-500/25"}`}>
+                                {p.type === "cambio" ? "Cambiar" : "Reparar"}
+                              </span>
+                              <span className="text-slate-100 font-medium truncate">{p.description}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeSparePart(p.id)}
+                              className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 rounded transition-colors shrink-0"
+                              title="Quitar"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setNewPartType("cambio")}
+                          className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "cambio" ? "bg-amber-500/20 border-amber-500/40 text-amber-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
+                        >
+                          Cambiar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewPartType("reparacion")}
+                          className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "reparacion" ? "bg-blue-500/20 border-blue-500/40 text-blue-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
+                        >
+                          Reparar
+                        </button>
+                      </div>
+                      <div className="flex-1 flex gap-2">
+                        <input
+                          type="text"
+                          value={newPartDesc}
+                          onChange={e => setNewPartDesc(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") addSparePart(); }}
+                          placeholder="Ej. Cambio de acelerador, purgado, cambio de llantas..."
+                          className="flex-1 px-3 py-2 rounded-lg border border-slate-800 bg-slate-950 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={addSparePart}
+                          disabled={!newPartDesc.trim()}
+                          className="px-3 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/25 rounded-lg font-bold text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Agregar</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* OBSERVACION DEL TECNICO PARA CUALQUIER CAMBIO */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                      Observación del técnico para el cambio o trabajo
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={techNotes}
+                      onChange={e => setTechNotes(e.target.value)}
+                      placeholder="Describe tu observación técnica: causa probable, piezas a considerar, recomendaciones..."
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-950 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-xs transition-all font-mono"
+                    />
+                  </div>
+
+                  {/* ACCIONES DEL DIAGNOSTICO */}
+                  <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleSaveDiagnosis}
+                      disabled={isLoading}
+                      className="flex-1 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wider px-5 py-3 rounded-xl transition-all shadow-md"
+                    >
+                      Guardar Diagnóstico y Pasar a Reparación
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-slate-900 rounded-2xl border border-slate-800 p-12 text-center text-slate-500 space-y-4 shadow-xl">
+                <div className="w-16 h-16 bg-slate-950 rounded-full flex items-center justify-center mx-auto border border-slate-800">
+                  <Stethoscope className="w-8 h-8 text-slate-400" />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-base text-slate-300">No hay vehículo seleccionado</h3>
+                  <p className="text-xs text-slate-500 mt-1">Selecciona un vehículo recién ingresado de la cola de la izquierda para abrir la zona de diagnóstico técnico.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       ) : (
         
-        // RENDER 2: VISTA NORMAL (ESTACIÓN DE TRABAJO COMPLETA)
+        // RENDER 2: VISTA NORMAL (ESTACI�N DE TRABAJO COMPLETA)
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start animate-fade-in">
           
           {/* KANBAN / LISTADO DE TRABAJOS (5 COLS) */}
@@ -445,19 +948,12 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                             const isSelected = rep.id === selectedId;
                             
                             // Branch tag translation
-                            const branchShortLabels: Record<string, string> = {
-                              lince_arenales: "S. Isidro",
-                              surco: "Surco",
-                              san_borja: "S. Borja",
-                              lince_leal: "Leal"
-                            };
-
-                            // Service tag translation
                             const serviceLabels: Record<string, string> = {
                               mantenimiento: "Manto",
                               diagnostico: "Diag",
                               garantia: "Gara",
-                              cambio: "Cambio"
+                              cambio: "Cambio",
+                              express: "Express"
                             };
 
                             return (
@@ -485,31 +981,23 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                                     {/* Subtags of metadata (Sede, Servicio) */}
                                     <div className="flex flex-wrap gap-1 mt-1.5">
                                       <span className="text-[9px] bg-slate-950 text-slate-400 px-1.5 py-0.2 rounded font-mono font-bold uppercase">
-                                        📍 {branchShortLabels[rep.workshopBranch || "lince_arenales"] || "Lince"}
+                                        �x� {BRANCH_SHORT_LABELS[rep.workshopBranch || "lince_arenales"] || "Lince"}
                                       </span>
                                       <span className="text-[9px] bg-slate-950 text-cyan-400/80 px-1.5 py-0.2 rounded font-mono font-bold uppercase">
-                                        🏷️ {serviceLabels[rep.serviceType || "diagnostico"] || "Diag"}
+                                        �x��️ {serviceLabels[rep.serviceType || "diagnostico"] || "Diag"}
                                       </span>
+                                      {rep.serviceAuthorized && (
+                                        <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.2 rounded font-mono font-black uppercase border border-emerald-500/40">
+                                          ✓ Servicio aprobado
+                                        </span>
+                                      )}
                                     </div>
                                   </div>
                                   <div className="text-right flex flex-col items-end justify-between self-stretch">
                                     <p className="text-[10px] text-slate-500 font-mono">
                                       {new Date(rep.receptionDate).toLocaleDateString([], { day: '2-digit', month: '2-digit' })}
                                     </p>
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        generateRepairPdf(rep);
-                                      }}
-                                      className="p-1 bg-slate-950 text-cyan-400 hover:text-cyan-300 rounded-md border border-slate-800 hover:border-cyan-500/50 transition-all cursor-pointer my-1 shadow-sm"
-                                      title="Imprimir Ficha PDF"
-                                    >
-                                      <Printer className="w-3.5 h-3.5" />
-                                    </button>
-                                    <p className="text-[10px] font-bold text-emerald-400 font-mono">
-                                      S/. {rep.estimatedCost}
-                                    </p>
+                                    <p className="text-[10px] text-slate-500 font-mono">Orden en cola</p>
                                   </div>
                                 </div>
                                 
@@ -548,20 +1036,11 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                       </h2>
                     </div>
                     <p className="text-xs text-slate-400">
-                      Cliente: <strong className="text-slate-200">{activeRepair.client.name}</strong> • Teléfono: <strong className="text-slate-200">{activeRepair.client.phone}</strong> • DNI: <strong className="text-slate-200">{activeRepair.client.dni || "N/D"}</strong>
+                      Cliente: <strong className="text-slate-200">{activeRepair.client.name}</strong>
                     </p>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-4 md:items-end">
-                    <button
-                      type="button"
-                      onClick={() => generateRepairPdf(activeRepair)}
-                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-850 text-cyan-400 border border-slate-800 hover:border-cyan-500/50 rounded-xl font-bold text-xs uppercase tracking-wider transition-all cursor-pointer shadow-sm"
-                      title="Imprimir Certificado de Conformidad PDF"
-                    >
-                      <Printer className="w-4 h-4" />
-                      <span>Ficha PDF</span>
-                    </button>
                     <div className="flex flex-col items-start md:items-end">
                       <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-1">Estado de Taller</span>
                       <div className="flex items-center space-x-1">
@@ -574,6 +1053,21 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                   </div>
                 </div>
 
+                {/* Banner: Servicio aprobado por el cliente */}
+                {activeRepair.serviceAuthorized && (
+                  <div className="bg-emerald-500/10 border-b border-emerald-500/40 px-6 py-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center space-x-2 text-emerald-300">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+                      <span className="font-display font-black text-sm uppercase tracking-wide">
+                        ✓ Servicio aprobado por el cliente
+                      </span>
+                    </div>
+                    <span className="text-emerald-200/90 text-xs font-bold hidden sm:block">
+                      Proceda con la reparación
+                    </span>
+                  </div>
+                )}
+
                 {/* Contenido Detallado */}
                 <div className="p-6 space-y-6">
                   
@@ -584,11 +1078,11 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         <Smartphone className="w-3.5 h-3.5" />
                         <span>Ficha de Recepción</span>
                       </h4>
-                      <p className="mb-1 text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "San Isidro (Arenales)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
-                      <p className="mb-1 text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{activeRepair.serviceType === "mantenimiento" ? "Mantenimiento" : activeRepair.serviceType === "diagnostico" ? "Diagnóstico" : activeRepair.serviceType === "garantia" ? "Garantía" : activeRepair.serviceType === "cambio" ? "Cambio de Repuesto" : "Diagnóstico"}</span> {activeRepair.serviceTypeDetail && `(${activeRepair.serviceTypeDetail})`}</p>
+                      <p className="mb-1 text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "Arenales (San Isidro)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
+                      <p className="mb-1 text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{activeRepair.serviceType === "mantenimiento" ? "Mantenimiento" : activeRepair.serviceType === "diagnostico" ? "Diagnóstico" : activeRepair.serviceType === "garantia" ? "Garantía" : activeRepair.serviceType === "cambio" ? "Cambio de Repuesto" : activeRepair.serviceType === "express" ? "Servicio Express" : "Diagnóstico"}</span> {activeRepair.serviceTypeDetail && `(${activeRepair.serviceTypeDetail})`}</p>
                       <p className="mb-1 text-slate-300"><strong>Tipo de Vehículo:</strong> {activeRepair.vehicle.type.toUpperCase()}</p>
                       <p className="mb-1 text-slate-300"><strong>Voltaje:</strong> {activeRepair.vehicle.voltage}</p>
-                      <p className="mb-1 text-slate-300"><strong>Batería (Estado):</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>
+                      <p className="mb-1 text-slate-300"><strong>Vida útil de la Batería:</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>
                       <p className="mb-1 text-slate-300">
                         <strong>Falla Reportada:</strong> <span className="italic text-slate-400 font-medium">"{activeRepair.vehicle.reportedFailure}"</span>
                       </p>
@@ -600,36 +1094,53 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                       </h4>
                       <p className="mb-1 text-slate-300">
                         <strong>Accesorios:</strong> {[
-                          activeRepair.accessories.charger ? "Cargador ⚡" : null,
-                          activeRepair.accessories.key ? "Llaves 🔑" : null,
-                          activeRepair.accessories.battery ? "Batería Extra 🔋" : null,
-                          activeRepair.accessories.helmet ? "Casco 🪖" : null,
-                          activeRepair.accessories.padlock ? "Candado 🔒" : null,
+                          activeRepair.accessories.charger ? "Cargador �a�" : null,
+                          activeRepair.accessories.key ? "Llaves �x" : null,
+                          activeRepair.accessories.battery ? "Batería Extra �x9" : null,
+                          activeRepair.accessories.helmet ? "Casco �x�" : null,
+                          activeRepair.accessories.padlock ? "Candado �x" : null,
                           activeRepair.accessories.others ? activeRepair.accessories.others : null
                         ].filter(Boolean).join(", ") || "Ninguno"}
                       </p>
                       <p className="mb-1 text-slate-300">
-                        <strong>Rayones/Golpes:</strong> {activeRepair.visualState.scratches ? "Sí (Rayado) ⚠️" : "No"} / {activeRepair.visualState.cracks ? "Sí (Fisura) ⚠️" : "No"}
+                        <strong>Rayones/Golpes:</strong> {activeRepair.visualState.scratches ? "Sí (Rayado) �a�️" : "No"} / {activeRepair.visualState.cracks ? "Sí (Fisura) �a�️" : "No"}
                       </p>
                       <p className="mb-1 text-slate-300">
                         <strong>Sistemas OK:</strong> {[
-                          activeRepair.visualState.brakesOk ? "Frenos" : "Freno ❌",
-                          activeRepair.visualState.lightsOk ? "Luces" : "Luz ❌",
-                          activeRepair.visualState.screenOk ? "Pantalla" : "Display ❌",
-                          activeRepair.visualState.tiresOk ? "Llantas" : "Llanta ❌"
-                        ].join(" • ")}
+                          activeRepair.visualState.brakesOk ? "Frenos" : "Freno �R",
+                          activeRepair.visualState.lightsOk ? "Luces" : "Luz �R",
+                          activeRepair.visualState.screenOk ? "Pantalla" : "Display �R",
+                          activeRepair.visualState.tiresOk ? "Llantas" : "Llanta �R"
+                        ].join(" ⬢ ")}
                       </p>
                       
                       {/* Audiovisual verification state from PDF */}
                       <p className="mb-1 mt-1 text-slate-300 flex items-center gap-2">
                         <strong>Evidencia:</strong> 
-                        <span className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] ${activeRepair.visualState.videoRecorded ? "bg-cyan-950 text-cyan-400 border border-cyan-900/40" : "bg-slate-950 text-slate-600"}`}>
-                          <Video className="w-2.5 h-2.5 mr-1" /> Video {activeRepair.visualState.videoRecorded ? "Sí" : "No"}
+                        <span className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] ${(activeRepair.visualState.videoEvidence?.length || 0) > 0 ? "bg-cyan-950 text-cyan-400 border border-cyan-900/40" : "bg-slate-950 text-slate-600"}`}>
+                          <Video className="w-2.5 h-2.5 mr-1" /> Video {(activeRepair.visualState.videoEvidence?.length || 0) > 0 ? `${activeRepair.visualState.videoEvidence!.length} en nube` : "No"}
                         </span>
                         <span className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] ${activeRepair.visualState.photosTaken ? "bg-cyan-950 text-cyan-400 border border-cyan-900/40" : "bg-slate-950 text-slate-600"}`}>
                           <Camera className="w-2.5 h-2.5 mr-1" /> Fotos {activeRepair.visualState.photosTaken ? "Sí" : "No"}
                         </span>
                       </p>
+
+                      {(activeRepair.visualState.videoEvidence && activeRepair.visualState.videoEvidence.length > 0) && (
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          {activeRepair.visualState.videoEvidence.map((ve, idx) => (
+                            <a
+                              key={idx}
+                              href={ve.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-cyan-950/60 hover:bg-cyan-900/70 text-cyan-300 border border-cyan-800/50 rounded-lg text-[10px] font-bold transition-colors"
+                            >
+                              <Video className="w-3 h-3" />
+                              <span>Video respaldo {idx + 1} · {ve.durationSec}s</span>
+                            </a>
+                          ))}
+                        </div>
+                      )}
 
                       {activeRepair.visualState.notes && (
                         <p className="text-slate-400 text-[11px] mt-1.5 bg-slate-900 p-1.5 rounded border border-slate-800">
@@ -639,105 +1150,39 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                     </div>
                   </div>
 
-                  {/* Firmas y Fotos tomadas en Tablet en Recepción */}
-                  {(activeRepair.clientSignature || (activeRepair.visualState.photos && activeRepair.visualState.photos.length > 0)) && (
-                    <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 text-xs space-y-4">
-                      {activeRepair.visualState.photos && activeRepair.visualState.photos.length > 0 && (
-                        <div>
-                          <span className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-2">📷 Fotografías de Evidencia (Ficha de Ingreso)</span>
-                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                            {activeRepair.visualState.photos.map((ph, idx) => (
-                              <div key={idx} className="relative rounded-lg overflow-hidden border border-slate-800 bg-slate-900 group">
-                                <img 
-                                  src={ph} 
-                                  className="w-full h-20 object-cover cursor-zoom-in hover:scale-105 transition-all" 
-                                  alt={`Evidencia ${idx + 1}`} 
-                                  onClick={() => {
-                                    const w = window.open();
-                                    if (w) w.document.write(`<img src="${ph}" style="max-width:100%; max-height:100vh; display:block; margin:auto;" />`);
-                                  }} 
-                                />
-                                <span className="absolute bottom-1 left-1 bg-slate-950/80 px-1 py-0.2 rounded text-[8px] font-mono text-slate-400 font-bold">Captura #{idx + 1}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                  {/* Falla reportada destacada para el técnico */}
+                  <div className="bg-rose-950/20 border border-rose-500/30 rounded-xl p-4">
+                    <p className="text-[10px] uppercase font-black tracking-widest text-rose-400 mb-1.5 flex items-center space-x-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>Falla reportada por el cliente</span>
+                    </p>
+                    <p className="text-sm text-slate-100 font-semibold leading-relaxed">
+                      "{activeRepair.vehicle.reportedFailure}"
+                    </p>
+                  </div>
 
-                      {/* Firmas Digitales Registradas */}
-                      <div className="pt-3 border-t border-slate-850/60 space-y-3">
-                        <span className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-2">✍️ Firmas y Conformidades de la Orden</span>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          {/* Firma Cliente */}
-                          <div className="bg-slate-900/40 p-2.5 rounded-xl border border-slate-850 flex flex-col justify-between gap-2">
-                            <div>
-                              <span className="block text-[9px] uppercase font-bold text-slate-400">Cliente</span>
-                              <p className="text-slate-200 font-semibold text-xs mt-0.5 truncate">{activeRepair.clientSignatureName || activeRepair.client.name}</p>
-                            </div>
-                            {activeRepair.clientSignature ? (
-                              <div className="bg-white p-1 rounded-lg h-12 flex items-center justify-center border border-slate-800 shrink-0">
-                                <img src={activeRepair.clientSignature} className="max-h-full max-w-full object-contain" alt="Firma Cliente" />
-                              </div>
-                            ) : (
-                              <div className="h-12 flex items-center justify-center border border-dashed border-slate-800 text-slate-600 text-[9px] rounded-lg shrink-0">
-                                Pendiente de Firma
-                              </div>
-                            )}
+                  {/* Evidencia fotográfica de ingreso (info técnica del vehículo) */}
+                  {(activeRepair.visualState.photos && activeRepair.visualState.photos.length > 0) && (
+                    <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 text-xs">
+                      <span className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-2">�x� Evidencia Fotográfica de Ingreso</span>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {activeRepair.visualState.photos.map((ph, idx) => (
+                          <div key={idx} className="relative rounded-lg overflow-hidden border border-slate-800 bg-slate-900 group">
+                            <img 
+                              src={ph} 
+                              className="w-full h-20 object-cover cursor-zoom-in hover:scale-105 transition-all" 
+                              alt={`Evidencia ${idx + 1}`} 
+                              onClick={() => {
+                                const w = window.open();
+                                if (w) w.document.write(`<img src="${ph}" style="max-width:100%; max-height:100vh; display:block; margin:auto;" />`);
+                              }} 
+                            />
+                            <span className="absolute bottom-1 left-1 bg-slate-950/80 px-1 py-0.2 rounded text-[8px] font-mono text-slate-400 font-bold">Captura #{idx + 1}</span>
                           </div>
-
-                          {/* Firma Recepcionista */}
-                          <div className="bg-slate-900/40 p-2.5 rounded-xl border border-slate-850 flex flex-col justify-between gap-2">
-                            <div>
-                              <span className="block text-[9px] uppercase font-bold text-slate-400">Recepcionista</span>
-                              <p className="text-slate-200 font-semibold text-xs mt-0.5 truncate">{activeRepair.tallerSignatureName || "Recepcionista Litio"}</p>
-                            </div>
-                            {activeRepair.tallerSignature ? (
-                              <div className="bg-white p-1 rounded-lg h-12 flex items-center justify-center border border-slate-800 shrink-0">
-                                <img src={activeRepair.tallerSignature} className="max-h-full max-w-full object-contain" alt="Firma Recepcionista" />
-                              </div>
-                            ) : (
-                              <div className="h-12 flex items-center justify-center border border-dashed border-slate-800 text-slate-600 text-[9px] rounded-lg shrink-0">
-                                Sin Firma de Ingreso
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Firma Técnico */}
-                          <div className="bg-slate-900/40 p-2.5 rounded-xl border border-slate-850 flex flex-col justify-between gap-2">
-                            <div>
-                              <span className="block text-[9px] uppercase font-bold text-slate-400">Técnico Responsable</span>
-                              <p className="text-slate-200 font-semibold text-xs mt-0.5 truncate">{activeRepair.technicianSignatureName || (activeRepair.technicianNotes ? "Técnico Asignado" : "Pendiente")}</p>
-                            </div>
-                            {activeRepair.technicianSignature ? (
-                              <div className="bg-white p-1 rounded-lg h-12 flex items-center justify-center border border-slate-800 shrink-0">
-                                <img src={activeRepair.technicianSignature} className="max-h-full max-w-full object-contain" alt="Firma Técnico" />
-                              </div>
-                            ) : (
-                              <div className="h-12 flex items-center justify-center border border-dashed border-slate-800 text-slate-600 text-[9px] rounded-lg shrink-0">
-                                Pendiente de Firma
-                              </div>
-                            )}
-                          </div>
-                        </div>
+                        ))}
                       </div>
                     </div>
                   )}
-
-                  {/* Detalle de Presupuesto e Ingresos (Sección 8 en PDF) */}
-                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                    <div>
-                      <p className="text-slate-500 font-semibold mb-0.5 uppercase text-[9px] tracking-wider">Costo Estimado</p>
-                      <p className="font-mono text-sm font-black text-cyan-400">S/. {activeRepair.estimatedCost}</p>
-                    </div>
-                    <div>
-                      <p className="text-slate-500 font-semibold mb-0.5 uppercase text-[9px] tracking-wider">Adelanto Recibido</p>
-                      <p className="font-mono text-sm font-black text-amber-400">S/. {activeRepair.payment?.advancePayment || 0} <span className="text-[10px] text-slate-500">({activeRepair.payment?.paymentMethod === "yape_plin" ? "Yape/Plin" : activeRepair.payment?.paymentMethod || "Efectivo"})</span></p>
-                    </div>
-                    <div>
-                      <p className="text-slate-500 font-semibold mb-0.5 uppercase text-[9px] tracking-wider">Saldo Pendiente</p>
-                      <p className="font-mono text-sm font-black text-rose-400">S/. {activeRepair.payment?.remainingBalance ?? Math.max(0, activeRepair.estimatedCost - (activeRepair.payment?.advancePayment || 0))}</p>
-                    </div>
-                  </div>
 
 
                   {/* 2. Diagnóstico Sugerido de Gemini AI (Interactiva) */}
@@ -818,7 +1263,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                   <div className="space-y-4">
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                       <h3 className="font-bold text-sm text-slate-100 uppercase tracking-wider font-display">Bitácora Técnica de Reparación</h3>
-                      <span className="text-[10px] text-slate-500">Operando como: Téc. {technicianName}</span>
+                      <span className="text-[10px] text-slate-500">Operando como: Téc. {technicianName.trim() || "�"}</span>
                     </div>
 
                     <div>
@@ -832,27 +1277,91 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                       />
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Presupuesto Inicial Estimado</label>
-                        <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-xl font-mono text-sm font-bold text-slate-400 h-[38px] flex items-center">
-                          S/. {activeRepair.estimatedCost}
+                    {/* Repuestos y trabajos detectados por el técnico */}
+                    <div className="pt-2 border-t border-slate-850 text-xs">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="flex items-center space-x-1.5 text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                          <Package className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Repuestos / Trabajos que necesita el vehículo</span>
+                        </label>
+                        <span className="text-[10px] text-slate-500">
+                          La jefa del local colocará el precio de repuesto y mano de obra
+                        </span>
+                      </div>
+
+                      {spareParts.length > 0 && (
+                        <ul className="space-y-1.5 mb-2">
+                          {spareParts.map((p) => (
+                            <li key={p.id} className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
+                              <div className="flex items-center space-x-2 min-w-0">
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide shrink-0 ${p.type === "cambio" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : "bg-blue-500/15 text-blue-400 border border-blue-500/25"}`}>
+                                  {p.type === "cambio" ? "Cambiar" : "Reparar"}
+                                </span>
+                                <span className="text-slate-100 font-medium truncate">{p.description}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeSparePart(p.id)}
+                                className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 rounded transition-colors shrink-0"
+                                title="Quitar"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setNewPartType("cambio")}
+                            className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "cambio" ? "bg-amber-500/20 border-amber-500/40 text-amber-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
+                          >
+                            Cambiar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewPartType("reparacion")}
+                            className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "reparacion" ? "bg-blue-500/20 border-blue-500/40 text-blue-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
+                          >
+                            Reparar
+                          </button>
+                        </div>
+                        <div className="flex-1 flex gap-2">
+                          <input
+                            type="text"
+                            value={newPartDesc}
+                            onChange={e => setNewPartDesc(e.target.value)}
+                            onKeyDown={e => { if (e.key === "Enter") addSparePart(); }}
+                            placeholder="Ej. Cambio de acelerador, purgado, cambio de llantas..."
+                            className="flex-1 px-3 py-2 rounded-lg border border-slate-800 bg-slate-950 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 text-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={addSparePart}
+                            disabled={!newPartDesc.trim()}
+                            className="px-3 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/25 rounded-lg font-bold text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Agregar</span>
+                          </button>
                         </div>
                       </div>
 
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Costo Final Cobrado (S/.)</label>
-                        <div className="relative">
-                          <span className="absolute left-3.5 top-2.2 text-slate-500 text-xs font-bold font-mono">S/.</span>
-                          <input
-                            type="number"
-                            value={actualCost}
-                            onChange={e => setActualCost(e.target.value)}
-                            placeholder="Costo definitivo de la reparación"
-                            className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-800 bg-slate-950 text-cyan-400 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
-                          />
+                      {spareParts.length > 0 && (
+                        <div className="flex justify-end pt-2">
+                          <button
+                            type="button"
+                            onClick={handleSaveSpareParts}
+                            disabled={isLoading}
+                            className="bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/25 font-bold text-xs px-5 py-2.5 rounded-xl transition-all"
+                          >
+                            Guardar Repuestos / Trabajos
+                          </button>
                         </div>
-                      </div>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 pt-2 border-t border-slate-850 text-xs">
@@ -886,7 +1395,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                             />
                             {techSignature && (
                               <p className="text-[10px] text-center font-bold text-cyan-400 font-mono tracking-widest uppercase">
-                                ✓ FIRMA DEL TÉCNICO VINCULADA
+                                �S FIRMA DEL T�0CNICO VINCULADA
                               </p>
                             )}
                           </div>
@@ -901,7 +1410,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         disabled={isLoading}
                         className="bg-slate-950 hover:bg-slate-900 text-cyan-400 border border-cyan-500/30 hover:border-cyan-400 font-bold text-xs px-5 py-2.5 rounded-xl transition-all shadow-sm"
                       >
-                        💾 Guardar Avance en Bitácora
+                        �x� Guardar Avance en Bitácora
                       </button>
                     </div>
                   </div>
@@ -935,22 +1444,42 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                             }`}
                           >
                             {btn.label}
-                            {isCurrent && " ✓"}
+                            {isCurrent && " �S"}
                           </button>
                         );
                       })}
                     </div>
 
                     {activeRepair.status === "ready" && (
-                      <div className="pt-2">
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateStatus("delivered")}
-                          className="w-full bg-slate-950 hover:bg-slate-900 text-emerald-400 border border-emerald-500/35 py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-[0_0_15px_rgba(16,185,129,0.15)] transition-all flex items-center justify-center space-x-2"
-                        >
-                          <CheckCircle className="w-4.5 h-4.5 text-emerald-400 animate-pulse" />
-                          <span>Entregar Vehículo al Cliente (Cerrar Historial)</span>
-                        </button>
+                      <div className="pt-2 space-y-2">
+                        {activeRepair.qcReport?.result === "approved" ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeliveryClientName(activeRepair.client?.name || "");
+                              setDeliverySignature(activeRepair.deliverySignature || "");
+                              setShowDeliveryModal(true);
+                            }}
+                            className="w-full bg-slate-950 hover:bg-slate-900 text-emerald-400 border border-emerald-500/35 py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-[0_0_15px_rgba(16,185,129,0.15)] transition-all flex items-center justify-center space-x-2"
+                          >
+                            <CheckCircle className="w-4.5 h-4.5 text-emerald-400 animate-pulse" />
+                            <span>Entregar Vehículo al Cliente (Cerrar Historial)</span>
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateStatus("testing")}
+                              className="w-full bg-slate-950 hover:bg-slate-900 text-cyan-400 border border-cyan-500/35 py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-[0_0_15px_rgba(6,182,212,0.15)] transition-all flex items-center justify-center space-x-2"
+                            >
+                              <Sparkles className="w-4.5 h-4.5 text-cyan-400 animate-pulse" />
+                              <span>Pasa a Control de Calidad (Revisa la Jefa del Local)</span>
+                            </button>
+                            <p className="text-[10px] text-amber-400/90 text-center">
+                              La jefa de {BRANCH_SHORT_LABELS[activeRepair.workshopBranch] || "tu local"} revisará el vehículo y lo aprobará para entrega.
+                            </p>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -989,7 +1518,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                 </div>
                 <div>
                   <h3 className="font-display font-bold text-base text-slate-300">No hay vehículo seleccionado</h3>
-                  <p className="text-xs text-slate-500 mt-1">Selecciona un vehículo de la cola de trabajo de taller de la izquierda para abrir el puesto de trabajo técnico.</p>
+                  <p className="text-xs text-slate-500 mt-1">Selecciona un vehículo de la cola de trabajo de taller de la izquierda para abrir la zona de trabajo técnico.</p>
                 </div>
               </div>
             )}
@@ -998,11 +1527,124 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         </div>
       )}
 
+      {/* MODAL DE ENTREGA AL CLIENTE: confirmación + firma del cliente */}
+      {showDeliveryModal && activeRepair && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+          <div className="relative w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-950 shrink-0">
+              <div className="flex items-center space-x-2">
+                <CheckCircle className="w-5 h-5 text-emerald-400" />
+                <span className="font-semibold text-sm text-slate-100 uppercase tracking-wider">Entrega del Vehículo al Cliente</span>
+              </div>
+              <button
+                onClick={() => setShowDeliveryModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-100 bg-slate-850 hover:bg-slate-800 rounded-lg transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto">
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1.5">
+                <p className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Orden</span>
+                  <span className="font-mono font-black text-cyan-400">{activeRepair.id}</span>
+                </p>
+                <p className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Vehículo</span>
+                  <span className="text-slate-200 font-semibold">{activeRepair.vehicle.brand} {activeRepair.vehicle.model}</span>
+                </p>
+                <p className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Cliente</span>
+                  <span className="text-slate-200 font-semibold">{activeRepair.client.name}</span>
+                </p>
+                <p className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Total</span>
+                  <span className="text-emerald-400 font-black font-mono">${activeRepair.actualCost || activeRepair.estimatedCost || 0}</span>
+                </p>
+              </div>
+
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 text-xs text-amber-200 flex items-start space-x-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <span>
+                  Confirmar esta entrega <strong>cierra el historial</strong> de la orden y registra la fecha, hora y firma del cliente. El vehículo pasará al historial de entregados en Estadísticas.
+                </span>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Nombre del Cliente que recibe</label>
+                <input
+                  type="text"
+                  value={deliveryClientName}
+                  onChange={(e) => setDeliveryClientName(e.target.value)}
+                  placeholder="Nombre completo del cliente"
+                  className="w-full px-3 py-2.5 bg-slate-950 text-xs text-slate-200 border border-slate-800 rounded-xl focus:outline-none focus:border-emerald-500 transition-colors"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="block text-xs font-bold text-slate-400 uppercase tracking-wider">Firma del Cliente (recibo del vehículo)</span>
+                <SignaturePad
+                  onSave={(dataUrl) => setDeliverySignature(dataUrl)}
+                  onClear={() => setDeliverySignature("")}
+                  initialData={deliverySignature}
+                  placeholderText="El cliente firma aquí al recibir su vehículo"
+                />
+                {deliverySignature && (
+                  <div className="flex items-center justify-between text-[11px] text-emerald-400 font-semibold">
+                    <span>✓ Firma capturada correctamente</span>
+                    <button
+                      type="button"
+                      onClick={() => setDeliverySignature("")}
+                      className="text-rose-400 hover:text-rose-300 underline"
+                    >
+                      Borrar firma
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 p-4 bg-slate-950 border-t border-slate-800 shrink-0">
+              <button
+                onClick={() => setShowDeliveryModal(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  if (!deliveryClientName || !deliveryClientName.trim()) {
+                    alert("Ingrese el nombre del cliente que recibe el vehículo.");
+                    return;
+                  }
+                  if (!deliverySignature) {
+                    alert("El cliente debe firmar para confirmar la entrega del vehículo.");
+                    return;
+                  }
+                  handleUpdateStatus("delivered", {
+                    deliveredAt: new Date().toISOString(),
+                    deliverySignature,
+                    deliverySignatureName: deliveryClientName.trim()
+                  });
+                  setShowDeliveryModal(false);
+                  setDeliverySignature("");
+                }}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-slate-950 rounded-xl text-xs font-black uppercase tracking-wider transition-colors flex items-center space-x-1.5"
+              >
+                <CheckCircle className="w-4 h-4" />
+                <span>Confirmar Entrega</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
 
-// SUBCOMPONENTE DE TARJETA OPTIMIZADA PARA TELEVISIÓN (TV CARD)
+// SUBCOMPONENTE DE TARJETA OPTIMIZADA PARA TELEVISI�N (TV CARD)
 function TvCard({ 
   item, 
   handleStatusChangeDirectly, 
@@ -1022,7 +1664,7 @@ function TvCard({
 
   // Sede label and color
   const branchNames: Record<string, string> = {
-    lince_arenales: "San Isidro (Arenales)",
+    lince_arenales: "Arenales (San Isidro)",
     surco: "Surco",
     san_borja: "San Borja",
     lince_leal: "Jose Leal (Lince)"
@@ -1036,10 +1678,10 @@ function TvCard({
   };
 
   const serviceIcons: Record<string, string> = {
-    mantenimiento: "🔧 Mantenimiento",
-    diagnostico: "🔍 Diagnóstico",
-    garantia: "🛡️ Garantía",
-    cambio: "🔄 Cambio"
+    mantenimiento: "�x� Mantenimiento",
+    diagnostico: "�x� Diagnóstico",
+    garantia: "�x:�️ Garantía",
+    cambio: "�x Cambio"
   };
 
   return (
@@ -1056,7 +1698,7 @@ function TvCard({
               {item.id}
             </span>
             <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${branchColors[item.workshopBranch || "lince_arenales"]}`}>
-              📍 {branchNames[item.workshopBranch || "lince_arenales"]}
+              �x� {branchNames[item.workshopBranch || "lince_arenales"]}
             </span>
           </div>
           
@@ -1065,7 +1707,7 @@ function TvCard({
           </h4>
 
           <p className="text-xs text-slate-400">
-            Cliente: <strong className="text-slate-300">{item.client.name}</strong> • Celular: <strong className="text-slate-300">{item.client.phone}</strong>
+            Cliente: <strong className="text-slate-300">{item.client.name}</strong>
           </p>
         </div>
 
@@ -1079,25 +1721,24 @@ function TvCard({
         </div>
       </div>
 
+      {/* Servicio aprobado por el cliente (TV) */}
+      {item.serviceAuthorized && (
+        <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-lg px-3 py-2 flex items-center justify-between">
+          <span className="text-emerald-300 font-display font-black text-sm uppercase tracking-wide">
+            ✓ Servicio aprobado por el cliente
+          </span>
+          <span className="text-emerald-200/90 text-[10px] font-bold uppercase hidden sm:block">
+            Proceda
+          </span>
+        </div>
+      )}
+
       {/* Falla reportada (Súper legible) */}
       <div className="bg-slate-950 p-3 rounded-lg border border-slate-850">
         <p className="text-[10px] uppercase font-black tracking-widest text-slate-500 mb-1">Síntoma reportado</p>
         <p className="text-xs text-slate-300 font-medium font-mono">
           "{item.vehicle.reportedFailure}"
         </p>
-      </div>
-
-      {/* Accesorios y evidencia audiovisual de un vistazo */}
-      <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400">
-        {item.accessories.charger && <span className="bg-slate-950 px-2 py-0.5 rounded font-bold border border-slate-800 text-slate-300">⚡ Cargador</span>}
-        {item.accessories.key && <span className="bg-slate-950 px-2 py-0.5 rounded font-bold border border-slate-800 text-slate-300">🔑 Llaves</span>}
-        {item.accessories.padlock && <span className="bg-slate-950 px-2 py-0.5 rounded font-bold border border-slate-800 text-slate-300">🔒 Candado</span>}
-        {item.accessories.battery && <span className="bg-slate-950 px-2 py-0.5 rounded font-bold border border-slate-800 text-slate-300">🔋 Batería Extra</span>}
-        
-        <div className="flex items-center space-x-1.5 ml-auto text-slate-500">
-          {item.visualState.videoRecorded && <Video className="w-3.5 h-3.5 text-cyan-400/80" title="Video de ingreso realizado" />}
-          {item.visualState.photosTaken && <Camera className="w-3.5 h-3.5 text-cyan-400/80" title="Fotografías de ingreso realizadas" />}
-        </div>
       </div>
 
       {/* LINEA DE TIEMPO INTERACTIVA / CAMBIO DE ESTADO EN 1 TAP */}
@@ -1131,7 +1772,7 @@ function TvCard({
         </div>
       </div>
 
-      {/* BOTÓN FÁCIL: SIGUIENTE PASO ➔ */}
+      {/* BOT�N FÁCIL: SIGUIENTE PASO �~ */}
       {item.status !== "ready" && (
         <div className="pt-1">
           <button

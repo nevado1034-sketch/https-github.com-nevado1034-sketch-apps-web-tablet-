@@ -1,4 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { 
   getFirestore, 
   collection, 
@@ -14,6 +15,7 @@ import {
   where,
   getDocFromServer,
   serverTimestamp,
+  deleteDoc,
   limit,
   Timestamp
 } from "firebase/firestore";
@@ -38,11 +40,13 @@ export const isFirebaseConfigured = !!(
 
 let app;
 let db: any = null;
+let storage: any = null;
 
 if (isFirebaseConfigured) {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
     db = getFirestore(app);
+    storage = getStorage(app);
     
     // Validate Connection to Firestore (MANDATORY per platform instructions)
     const testConnection = async () => {
@@ -62,6 +66,10 @@ if (isFirebaseConfigured) {
 
 export { 
   db, 
+  storage,
+  ref,
+  uploadBytes,
+  getDownloadURL,
   collection, 
   doc, 
   getDocs, 
@@ -75,5 +83,6 @@ export {
   where,
   serverTimestamp,
   limit,
-  Timestamp
+  Timestamp,
+  deleteDoc
 };

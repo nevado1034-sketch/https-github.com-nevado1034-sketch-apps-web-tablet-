@@ -32,6 +32,7 @@ interface ChatClient {
   status?: string;
   progress?: number;
   sede?: string;
+  sedeKey?: string;
   vehicleType?: string;
   vehicleBrand?: string;
   vehicleModel?: string;
@@ -50,6 +51,7 @@ interface ChatMessage {
 
 const BRANCH_LABELS: Record<string, string> = {
   "Litio Lince": "San Isidro (Arenales)",
+  "Litio San Isidro": "San Isidro (Arenales)",
   "Litio Surco": "Surco",
   "Litio San Borja": "San Borja",
   "Litio Jose Leal": "Lince (José Leal)",
@@ -60,7 +62,28 @@ const BRANCH_LABELS: Record<string, string> = {
   lince_leal: "Lince (José Leal)"
 };
 
-export default function ChatView({ userBranch }: { userBranch?: string }) {
+// Valores de "sede" (etiqueta o key) que pertenecen a cada local
+const LOCAL_SEDE_VALUES: Record<string, string[]> = {
+  lince_arenales: ["Litio Lince", "Litio San Isidro", "lince_arenales"],
+  surco: ["Litio Surco", "surco"],
+  san_borja: ["Litio San Borja", "san_borja"],
+  lince_leal: ["Litio Jose Leal", "Litio Leal", "lince_leal"]
+};
+
+const clientMatchesLocal = (c: { sede?: string; sedeKey?: string }, localKey: string): boolean => {
+  if (!localKey) return true;
+  const values = LOCAL_SEDE_VALUES[localKey] || [localKey];
+  return values.includes(c.sede || "") || values.includes(c.sedeKey || "");
+};
+
+// El saludo de bienvenida del chat lo inserta la app Android localmente;
+// no debe mostrarse en el chat web (es solo para el cliente de la app).
+const WELCOME_MARKER = "Bienvenido al Chat Directo de Servicio Técnico de Litio Energy";
+const isWelcomeMessage = (msg: any): boolean => {
+  return !!(msg && typeof msg.message === "string" && msg.message.includes(WELCOME_MARKER));
+};
+
+export default function ChatView({ userLocalKey, userName }: { userLocalKey?: string; userName?: string }) {
   const [clients, setClients] = useState<ChatClient[]>([]);
   const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -79,7 +102,7 @@ export default function ChatView({ userBranch }: { userBranch?: string }) {
 
   const messagesPath = (phone: string) => phoneKey(phone);
 
-  // Load clients from Firestore (clientes collection, same as Android app)
+  // Load clients from Firestore (local subcollection + canonical, same as Android app)
   useEffect(() => {
     if (!isFirebaseConfigured || !db) {
       setError("Firebase no configurado. Revisa las variables VITE_FIREBASE_* en el .env");
@@ -87,68 +110,85 @@ export default function ChatView({ userBranch }: { userBranch?: string }) {
       return;
     }
 
-    const q = query(collection(db, "clientes"));
-    const unsubscribe = onSnapshot(q, async (snapshot) => {
-      const list: ChatClient[] = [];
-      for (const docSnap of snapshot.docs) {
-        const data = docSnap.data();
-        const phone = data.phone || docSnap.id;
-        const client: ChatClient = {
-          id: docSnap.id,
-          phone,
-          name: data.name || "Cliente",
-          status: data.status || "Recibido",
-          progress: data.progress || 0,
-          sede: data.sede || "",
-          vehicleType: data.vehicleType || "",
-          vehicleBrand: data.vehicleBrand || "",
-          vehicleModel: data.vehicleModel || "",
-          unread: 0
-        };
+    const canonicalQ = query(collection(db, "clientes"));
+    const localQ = userLocalKey ? query(collection(db, "clientes", userLocalKey, "clientes")) : null;
 
-        // Fetch last message and unread count for this client
-        try {
-          const msgsQuery = query(
-            collection(db, "chats", messagesPath(phone), "messages"),
-            orderBy("timestamp", "desc")
-          );
-          const msgsSnap = await getDocs(msgsQuery);
-          if (!msgsSnap.empty) {
-            const first = msgsSnap.docs[0].data() as any;
+    const buildClient = async (docSnap: any): Promise<ChatClient> => {
+      const data = docSnap.data();
+      const phone = data.phone || docSnap.id;
+      const client: ChatClient = {
+        id: docSnap.id,
+        phone,
+        name: data.name || "Cliente",
+        status: data.status || "Recibido",
+        progress: data.progress || 0,
+        sede: data.sede || "",
+        sedeKey: data.sedeKey || "",
+        vehicleType: data.vehicleType || "",
+        vehicleBrand: data.vehicleBrand || "",
+        vehicleModel: data.vehicleModel || "",
+        unread: 0
+      };
+
+      // Fetch last message and unread count for this client
+      try {
+        const msgsQuery = query(
+          collection(db, "chats", messagesPath(phone), "messages"),
+          orderBy("timestamp", "desc")
+        );
+        const msgsSnap = await getDocs(msgsQuery);
+        if (!msgsSnap.empty) {
+          const realMessages = msgsSnap.docs
+            .map((m) => m.data())
+            .filter((d) => !isWelcomeMessage(d));
+          if (realMessages.length > 0) {
+            const first = realMessages[0] as any;
             client.lastMessage = first.message || "";
             client.lastMessageTime = typeof first.timestamp === "number" ? first.timestamp : 0;
-            client.unread = msgsSnap.docs.filter((m) => {
-              const d = m.data() as any;
-              return d.senderRole === "CLIENT";
+            client.unread = realMessages.filter((d) => {
+              return (d as any).senderRole === "CLIENT";
             }).length;
           }
-        } catch (e) {
-          // Chat not present yet
         }
-
-        list.push(client);
+      } catch (e) {
+        // Chat not present yet
       }
+      return client;
+    };
 
-      // Filter by branch/sede for local users
-      const branchSedeMap: Record<string, string[]> = {
-        lince_arenales: ["Litio Lince", "Litio San Isidro"],
-        surco: ["Litio Surco"],
-        san_borja: ["Litio San Borja"],
-        lince_leal: ["Litio Leal", "Litio Jose Leal"]
-      };
-      const allowedSedes = userBranch ? branchSedeMap[userBranch] || [] : null;
-      const filtered = allowedSedes ? list.filter((c) => allowedSedes.includes(c.sede)) : list;
+    const sources: { q: any; into: Map<string, ChatClient> }[] = [
+      { q: canonicalQ, into: new Map() }
+    ];
+    if (localQ) sources.push({ q: localQ, into: new Map() });
 
+    const commit = () => {
+      const merged = new Map(sources[0].into);
+      for (let i = 1; i < sources.length; i++) {
+        sources[i].into.forEach((c, phone) => merged.set(phone, c));
+      }
+      const list = Array.from(merged.values());
+      const filtered = userLocalKey
+        ? list.filter((c) => clientMatchesLocal(c, userLocalKey!))
+        : list;
       setClients(filtered);
       setLoading(false);
-    }, (err) => {
-      console.error("ChatView onSnapshot error:", err);
-      setError("Error al cargar clientes desde Firestore. Revisa las reglas de seguridad.");
-      setLoading(false);
-    });
+    };
 
-    return () => unsubscribe();
-  }, [userBranch]);
+    const unsubs = sources.map(({ q, into }) =>
+      onSnapshot(q, async (snapshot) => {
+        into.clear();
+        const arr = await Promise.all(snapshot.docs.map(buildClient));
+        arr.forEach((c) => into.set(c.phone, c));
+        commit();
+      }, (err) => {
+        console.error("ChatView onSnapshot error:", err);
+        setError("Error al cargar clientes desde Firestore. Revisa las reglas de seguridad.");
+        setLoading(false);
+      })
+    );
+
+    return () => unsubs.forEach((u) => u());
+  }, [userLocalKey]);
 
   // Listen to messages for the selected client
   useEffect(() => {
@@ -164,6 +204,7 @@ export default function ChatView({ userBranch }: { userBranch?: string }) {
       const list: ChatMessage[] = [];
       snapshot.forEach((docSnap) => {
         const d = docSnap.data() as any;
+        if (isWelcomeMessage(d)) return;
         list.push({
           id: docSnap.id,
           senderRole: d.senderRole || "CLIENT",
@@ -190,7 +231,7 @@ export default function ChatView({ userBranch }: { userBranch?: string }) {
       const messagesCol = collection(db, "chats", messagesPath(selectedPhone), "messages");
       await addDoc(messagesCol, {
         senderRole: "TECHNICIAN",
-        senderName: "Técnico Litio Energy",
+        senderName: userName || "Técnico Litio Energy",
         message: text,
         timestamp: Date.now()
       });

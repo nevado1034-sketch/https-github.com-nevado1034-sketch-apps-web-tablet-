@@ -21,16 +21,15 @@ import { generateRepairPdf } from "../utils/pdfGenerator";
 interface DashboardViewProps {
   repairs: RepairItem[];
   stats: WorkshopStats;
-  userBranch?: string;
 }
 
-export default function DashboardView({ repairs, stats, userBranch }: DashboardViewProps) {
+export default function DashboardView({ repairs, stats }: DashboardViewProps) {
   // Delivered history state
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedBranch, setSelectedBranch] = useState(userBranch || "all");
+  const [selectedBranch, setSelectedBranch] = useState("all");
 
   const branchLabels: Record<string, string> = {
-    lince_arenales: "San Isidro (Arenales)",
+    lince_arenales: "Arenales (San Isidro)",
     surco: "Surco",
     san_borja: "San Borja",
     lince_leal: "José Leal (Lince)"
@@ -44,6 +43,7 @@ export default function DashboardView({ repairs, stats, userBranch }: DashboardV
       r.client.name.toLowerCase().includes(term) ||
       r.id.toLowerCase().includes(term) ||
       (r.client.phone && r.client.phone.includes(term)) ||
+      (r.client.dni && r.client.dni.includes(term)) ||
       r.vehicle.brand.toLowerCase().includes(term) ||
       r.vehicle.model.toLowerCase().includes(term);
       
@@ -76,7 +76,7 @@ export default function DashboardView({ repairs, stats, userBranch }: DashboardV
   
   // Calculate distribution by type
   const scooterCount = repairs.filter(r => r.vehicle.type === "scooter").length;
-  const motoCount = repairs.filter(r => r.vehicle.type === "moto").length;
+  const motoCount = repairs.filter(r => ["moto", "bicimoto", "trimoto"].includes(r.vehicle.type)).length;
   const biciCount = repairs.filter(r => r.vehicle.type === "bici").length;
   const otherCount = repairs.filter(r => r.vehicle.type === "otro").length;
   
@@ -308,7 +308,7 @@ export default function DashboardView({ repairs, stats, userBranch }: DashboardV
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Buscar por cliente, teléfono, marca o modelo de vehículo..."
+              placeholder="Buscar por DNI, cliente, teléfono, marca o modelo de vehículo..."
               className="w-full pl-9 pr-4 py-2.5 bg-slate-950 text-xs text-slate-200 border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500 transition-colors"
             />
           </div>
@@ -316,11 +316,10 @@ export default function DashboardView({ repairs, stats, userBranch }: DashboardV
             <select
               value={selectedBranch}
               onChange={(e) => setSelectedBranch(e.target.value)}
-              disabled={!!userBranch}
-              className="w-full px-3 py-2.5 bg-slate-950 text-xs text-slate-300 border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500 transition-colors disabled:opacity-70 disabled:cursor-not-allowed"
+              className="w-full px-3 py-2.5 bg-slate-950 text-xs text-slate-300 border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500 transition-colors"
             >
-              {!userBranch && <option value="all">Todas las Sedes</option>}
-              <option value="lince_arenales">San Isidro (Arenales)</option>
+              <option value="all">Todas las Sedes</option>
+              <option value="lince_arenales">Arenales (San Isidro)</option>
               <option value="surco">Surco</option>
               <option value="san_borja">San Borja</option>
               <option value="lince_leal">José Leal (Lince)</option>
@@ -368,7 +367,7 @@ export default function DashboardView({ repairs, stats, userBranch }: DashboardV
                         <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Vehículo Eléctrico</span>
                         <div className="space-y-1 text-slate-300 font-medium">
                           <p className="flex items-center gap-1.5">
-                            <span>{item.vehicle.type === "scooter" ? "🛴" : item.vehicle.type === "moto" ? "🏍️" : item.vehicle.type === "bici" ? "🚲" : "🔋"}</span>
+                            <span>{item.vehicle.type === "scooter" ? "🛴" : item.vehicle.type === "moto" ? "🏍️" : item.vehicle.type === "bicimoto" ? "🛵" : item.vehicle.type === "trimoto" ? "🛺" : item.vehicle.type === "bici" ? "🚲" : "🔋"}</span>
                             <span className="text-slate-100 font-semibold">{item.vehicle.brand} {item.vehicle.model}</span>
                           </p>
                           <p className="text-[11px] text-slate-400">Voltaje: <span className="font-mono font-bold">{item.vehicle.voltage}</span></p>

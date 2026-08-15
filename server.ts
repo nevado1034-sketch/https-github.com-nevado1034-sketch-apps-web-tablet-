@@ -10,7 +10,7 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 const REPAIRS_FILE = path.join(process.cwd(), "repairs.json");
 const CLIENTS_FILE = path.join(process.cwd(), "clients.json");
@@ -19,109 +19,12 @@ const CLIENTS_FILE = path.join(process.cwd(), "clients.json");
 function readClients(): any[] {
   try {
     if (!fs.existsSync(CLIENTS_FILE)) {
-      const initialClients = [
-        {
-          dni: "74839201",
-          name: "Juan Pérez Ramos",
-          phone: "+51 987 654 321",
-          email: "juan.perez@example.com",
-          defaultVehicle: {
-            type: "scooter",
-            brand: "Xiaomi",
-            model: "Pro 2",
-            voltage: "36V"
-          },
-          importedAt: new Date().toISOString()
-        },
-        {
-          dni: "10472819",
-          name: "María López Fernández",
-          phone: "+51 912 345 678",
-          email: "maria.lopez@gmail.com",
-          defaultVehicle: {
-            type: "bike",
-            brand: "Segway Ninebot",
-            model: "MAX G30",
-            voltage: "48V"
-          },
-          importedAt: new Date().toISOString()
-        },
-        {
-          dni: "20601234567",
-          name: "Inversiones E-Mobility S.A.C.",
-          phone: "+51 955 443 322",
-          email: "contacto@emobility.pe",
-          defaultVehicle: {
-            type: "moped",
-            brand: "NIU",
-            model: "NQi GTS",
-            voltage: "60V"
-          },
-          importedAt: new Date().toISOString()
-        },
-        {
-          dni: "45892014",
-          name: "Carlos Mendoza Silva",
-          phone: "+51 933 221 100",
-          email: "carlos.mendoza@hotmail.com",
-          defaultVehicle: {
-            type: "scooter",
-            brand: "Dualtron",
-            model: "Thunder 2",
-            voltage: "72V"
-          },
-          importedAt: new Date().toISOString()
-        }
-      ];
-      fs.writeFileSync(CLIENTS_FILE, JSON.stringify(initialClients, null, 2), "utf-8");
-      return initialClients;
+      return [];
     }
     const data = fs.readFileSync(CLIENTS_FILE, "utf-8");
     const parsed = JSON.parse(data);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      const initialClients = [
-        {
-          dni: "74839201",
-          name: "Juan Pérez Ramos",
-          phone: "+51 987 654 321",
-          email: "juan.perez@example.com",
-          defaultVehicle: {
-            type: "scooter",
-            brand: "Xiaomi",
-            model: "Pro 2",
-            voltage: "36V"
-          },
-          importedAt: new Date().toISOString()
-        },
-        {
-          dni: "10472819",
-          name: "María López Fernández",
-          phone: "+51 912 345 678",
-          email: "maria.lopez@gmail.com",
-          defaultVehicle: {
-            type: "bike",
-            brand: "Segway Ninebot",
-            model: "MAX G30",
-            voltage: "48V"
-          },
-          importedAt: new Date().toISOString()
-        },
-        {
-          dni: "20601234567",
-          name: "Inversiones E-Mobility S.A.C.",
-          phone: "+51 955 443 322",
-          email: "contacto@emobility.pe",
-          defaultVehicle: {
-            type: "moped",
-            brand: "NIU",
-            model: "NQi GTS",
-            voltage: "60V"
-          },
-          importedAt: new Date().toISOString()
-        }
-      ];
-      fs.writeFileSync(CLIENTS_FILE, JSON.stringify(initialClients, null, 2), "utf-8");
-      return initialClients;
+    if (!Array.isArray(parsed)) {
+      return [];
     }
     return parsed;
   } catch (error) {
@@ -431,27 +334,17 @@ app.get("/api/stats", (req, res) => {
   
   const stats = {
     total: repairs.length,
-    receptioned: 0,
-    diagnosing: 0,
-    waiting_parts: 0,
-    repairing: 0,
-    testing: 0,
-    ready: 0,
-    delivered: 0,
-    monthlyEarnings: 0
+    receptioned: repairs.filter((r) => r.status === "receptioned").length,
+    diagnosing: repairs.filter((r) => r.status === "diagnosing").length,
+    waiting_parts: repairs.filter((r) => r.status === "waiting_parts").length,
+    repairing: repairs.filter((r) => r.status === "repairing").length,
+    testing: repairs.filter((r) => r.status === "testing").length,
+    ready: repairs.filter((r) => r.status === "ready").length,
+    delivered: repairs.filter((r) => r.status === "delivered").length,
+    monthlyEarnings: repairs
+      .filter((r) => r.status === "delivered" || r.status === "ready")
+      .reduce((sum, r) => sum + (r.actualCost || r.estimatedCost || 0), 0)
   };
-  for (const r of repairs) {
-    if (r.status === "receptioned") stats.receptioned++;
-    else if (r.status === "diagnosing") stats.diagnosing++;
-    else if (r.status === "waiting_parts") stats.waiting_parts++;
-    else if (r.status === "repairing") stats.repairing++;
-    else if (r.status === "testing") stats.testing++;
-    else if (r.status === "ready") stats.ready++;
-    else if (r.status === "delivered") stats.delivered++;
-    if (r.status === "delivered" || r.status === "ready") {
-      stats.monthlyEarnings += (r.actualCost || r.estimatedCost || 0);
-    }
-  }
   
   res.json(stats);
 });
@@ -565,92 +458,6 @@ app.post("/api/clients/import", (req, res) => {
   });
 });
 
-// Import from Google Sheets public CSV link
-app.post("/api/clients/import-google-sheets", async (req, res) => {
-  const { url } = req.body;
-  if (!url || typeof url !== "string") {
-    return res.status(400).json({ error: "Se requiere un enlace válido de Google Sheets." });
-  }
-
-  try {
-    // Transform Google Sheets URL to export CSV URL
-    let csvUrl = url;
-    if (url.includes("docs.google.com/spreadsheets")) {
-      const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-      if (match && match[1]) {
-        const sheetId = match[1];
-        csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
-      }
-    }
-
-    const fetchRes = await fetch(csvUrl);
-    if (!fetchRes.ok) {
-      return res.status(400).json({ 
-        error: "No se pudo descargar la hoja de cálculo. Asegúrese de que el enlace de Google Sheets esté configurado como 'Cualquier persona con el enlace puede ver'." 
-      });
-    }
-
-    const csvText = await fetchRes.text();
-    // Parse CSV lines
-    const lines = csvText.split(/\r?\n/).filter(line => line.trim().length > 0);
-    if (lines.length < 2) {
-      return res.status(400).json({ error: "La hoja de cálculo está vacía o no tiene filas de datos." });
-    }
-
-    const headers = lines[0].split(",").map(h => h.replace(/^["']|["']$/g, "").trim());
-    const rawRows = lines.slice(1).map(line => {
-      const values = line.split(",").map(v => v.replace(/^["']|["']$/g, "").trim());
-      const obj: Record<string, string> = {};
-      headers.forEach((h, idx) => {
-        obj[h] = values[idx] || "";
-      });
-      return obj;
-    });
-
-    const existingClients = readClients();
-    let addedCount = 0;
-    let updatedCount = 0;
-
-    rawRows.forEach((raw) => {
-      const norm = normalizeClientRecord(raw);
-      if (!norm) return;
-
-      const keyDni = norm.dni.toLowerCase();
-      const keyName = norm.name.toLowerCase();
-
-      const existingIdx = existingClients.findIndex(c => 
-        (c.dni && c.dni.toLowerCase() === keyDni && keyDni !== "s/d") ||
-        (c.name && c.name.toLowerCase() === keyName)
-      );
-
-      if (existingIdx >= 0) {
-        existingClients[existingIdx] = {
-          ...existingClients[existingIdx],
-          ...norm,
-          updatedAt: new Date().toISOString()
-        };
-        updatedCount++;
-      } else {
-        existingClients.push(norm);
-        addedCount++;
-      }
-    });
-
-    writeClients(existingClients);
-
-    res.json({
-      success: true,
-      addedCount,
-      updatedCount,
-      totalClients: existingClients.length,
-      message: `¡Google Sheet sincronizado! Se importaron ${addedCount} clientes y se actualizaron ${updatedCount}.`
-    });
-  } catch (error: any) {
-    console.error("Error importing Google Sheet:", error);
-    res.status(500).json({ error: `Error al procesar la hoja de Google: ${error?.message || "Sintaxis no válida"}` });
-  }
-});
-
 // Configurable Google Sheets and Apps Script settings
 const SAVED_SHEET_URL_FILE = path.join(process.cwd(), "saved_sheet_url.json");
 const DEFAULT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzvoPzO-magsnJG9EMBGtpawmykzVgc36oZ4-wqJI3PPFGcGt_XVAho3gZbbyozvnaUDQ/exec";
@@ -719,6 +526,21 @@ function parseCSVOrDSV(text: string) {
 
 // Helper function to sync clients from a Google Sheets URL
 async function fetchAndSyncGoogleSheet(url: string) {
+  // SSRF guard: solo URLs https hacia Google (Sheets o Apps Script)
+  let safeUrl: URL;
+  try {
+    safeUrl = new URL(url);
+  } catch {
+    throw new Error("El enlace no es una URL válida.");
+  }
+  if (safeUrl.protocol !== "https:") {
+    throw new Error("Solo se permiten enlaces https (Google Sheets / Apps Script).");
+  }
+  const allowedHosts = ["docs.google.com", "script.google.com", "script.googleusercontent.com"];
+  if (!allowedHosts.some((h) => safeUrl.hostname === h || safeUrl.hostname.endsWith(`.${h}`))) {
+    throw new Error("El enlace debe pertenecer a Google Sheets o Google Apps Script.");
+  }
+
   let csvUrl = url;
   if (url.includes("docs.google.com/spreadsheets")) {
     const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
@@ -989,18 +811,15 @@ app.post("/api/repairs", (req, res) => {
   const repairs = readRepairs();
   const newRepair = req.body;
   
-  // Create unique consecutive sequential ID like LT-2026-0004
-  // computed from the highest existing number to avoid duplicates after deletions.
+  // Create unique consecutive sequential ID like LT-2026-0004 (sin colisiones)
   const year = new Date().getFullYear();
-  const prefix = `LT-${year}-`;
-  let maxSeq = 0;
-  for (const r of repairs) {
-    if (r.id && r.id.startsWith(prefix)) {
-      const num = parseInt(r.id.slice(prefix.length), 10);
-      if (!isNaN(num) && num > maxSeq) maxSeq = num;
-    }
+  let count = repairs.length + 1;
+  let seqId = `LT-${year}-${String(count).padStart(4, "0")}`;
+  const existingIds = new Set(repairs.map((r) => r.id));
+  while (existingIds.has(seqId)) {
+    count++;
+    seqId = `LT-${year}-${String(count).padStart(4, "0")}`;
   }
-  const seqId = `${prefix}${String(maxSeq + 1).padStart(4, "0")}`;
   
   const repairItem = {
     id: seqId,
@@ -1077,6 +896,8 @@ app.put("/api/repairs/:id", (req, res) => {
   repairs[index] = {
     ...currentItem,
     ...updateData,
+    estimatedCost: typeof updateData.estimatedCost !== "undefined" ? Number(updateData.estimatedCost) || 0 : currentItem.estimatedCost,
+    actualCost: typeof updateData.actualCost !== "undefined" ? Number(updateData.actualCost) || 0 : currentItem.actualCost,
     historyLog: logs
   };
   

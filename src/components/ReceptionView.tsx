@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   PlusCircle, 
   User, 
@@ -12,12 +12,11 @@ import {
   AlertTriangle, 
   Tag, 
   FileText, 
-  RefreshCw,
   Gauge,
   MapPin,
-  CreditCard,
   Video,
   Camera,
+  Trash2,
   FileSignature,
   Printer,
   Search,
@@ -31,28 +30,66 @@ import {
   Copy,
   X,
   Table,
-  CloudDownload
+  CloudDownload,
+  Mic
 } from "lucide-react";
-import { RepairItem, VehicleType, VisualState, Accessories, WorkshopBranch, ServiceType, PaymentMethod, PaymentInfo } from "../types";
-import { SignaturePad, PhotoManager } from "./TabletHelpers";
+import { RepairItem, VehicleType, VisualState, Accessories, WorkshopBranch, ServiceType } from "../types";
+import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
 import { generateRepairPdf } from "../utils/pdfGenerator";
-import { db, isFirebaseConfigured, collection, query, where, getDocs } from "../firebase";
+import { db, isFirebaseConfigured, collection, query, where, getDocs, onSnapshot, orderBy, limit } from "../firebase";
 
 interface ReceptionViewProps {
   repairs: RepairItem[];
   onCreateRepair: (newRepair: any) => Promise<RepairItem | undefined>;
   isLoading: boolean;
-  userBranch?: string;
+  userLocalKey?: string;
+  userRole?: string;
 }
 
 const COMMON_BRANDS: Record<VehicleType, string[]> = {
-  scooter: ["Xiaomi", "Segway Ninebot", "Minimotors Dualtron", "Kaabo", "Vsett", "Joyor", "Cecotec"],
+  scooter: ["Xiaomi", "Segway Ninebot", "Minimotors Dualtron", "Kaabo", "Vsett", "Blade", "Navee", "Yadea", "Tailg"],
+  bici: ["Trek", "Specialized", "Giant", "Xiaomi Himo", "Decathlon Rockrider", "Cube", "Scott", "Moustache"],
   moto: ["Super Soco", "Niu", "E-Volt", "Vespa Elettrica", "Sur-Ron", "Talaria", "Zero Motorcycles"],
-  bici: ["Trek", "Specialized", "Giant", "Xiaomi Himo", "Decathlon Rockrider", "Cube", "Scott"],
+  bicimoto: ["Bimotion", "Super Soco", "Niu", "Koyota", "Thunder", "E-Volt", "Genérica"],
+  trimoto: ["Bajaj", "Koyota", "Zuzuki", "Thunder", "Yingang", "Honda", "Genérica"],
   otro: ["Monociclo KingSong", "Monociclo Begode", "Skateboard Boosted", "Triciclo de carga"]
 };
 
-const VOLTAGES = ["24V", "36V", "48V", "52V", "60V", "72V", "84V", "96V", "No sabe"];
+const VOLTAGES = ["24V --- 7 series", "36V --- 10 series", "48V --- 13 series", "52V --- 14 series", "60V --- 16 series", "64V --- 17 series", "72V --- 20 series", "No sabe"];
+
+function SpeechToTextButton({ onResult, label }: { onResult: (text: string) => void; label: string }) {
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = React.useRef<any>(null);
+
+  const toggle = () => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { alert("Tu navegador no soporta reconocimiento de voz. Usa Chrome o Edge."); return; }
+    if (isListening) { recognitionRef.current?.stop(); setIsListening(false); return; }
+    const recognition = new SR();
+    recognitionRef.current = recognition;
+    recognition.lang = "es-PE";
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = (e: any) => {
+      let t = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal) t += e.results[i][0].transcript + " "; }
+      if (t) onResult(t.trim());
+    };
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => setIsListening(false);
+    setIsListening(true);
+    recognition.start();
+  };
+
+  return (
+    <button type="button" onClick={toggle}
+      className={`absolute right-2 bottom-2 p-1.5 rounded-lg border text-xs font-bold transition-all z-10 ${isListening ? "bg-rose-500/20 border-rose-500/50 text-rose-400 animate-pulse" : "bg-slate-800 border-slate-700 text-slate-400 hover:text-cyan-400 hover:border-cyan-500/50"}`}
+      title={isListening ? "Detener dictado" : `Dictar ${label} por voz`}
+    >
+      <Mic className="w-3.5 h-3.5" />
+    </button>
+  );
+}
 
 const WORKSHOP_BRANCH_LABELS: Record<WorkshopBranch, string> = {
   lince_arenales: "Sede San Isidro (Av. Arenales 2584)",
@@ -61,11 +98,52 @@ const WORKSHOP_BRANCH_LABELS: Record<WorkshopBranch, string> = {
   lince_leal: "Sede Lince (Av. Jose Leal 571)"
 };
 
-export default function ReceptionView({ repairs, onCreateRepair, isLoading, userBranch }: ReceptionViewProps) {
-  // Branch state (Sede) - locked to user's branch for local users
+// Mismo mapeo que la app usa al guardar el cliente (campo "sede")
+const BRANCH_TO_SEDE_LABEL: Record<string, string> = {
+  lince_arenales: "Litio Lince",
+  surco: "Litio Surco",
+  san_borja: "Litio San Borja",
+  lince_leal: "Litio Jose Leal"
+};
+
+// Etiquetas de sede usadas por la app Android (puede variar por versión)
+const ANDROID_SEDE_LABELS: Record<string, string[]> = {
+  lince_arenales: ["Litio Lince", "Litio San Isidro", "Litio Arenales"],
+  surco: ["Litio Surco"],
+  san_borja: ["Litio San Borja"],
+  lince_leal: ["Litio Jose Leal", "Litio Leal"]
+};
+
+// Convierte la etiqueta de vehículo de la app Android al tipo interno
+const ANDROID_TYPE_KEYS: Record<string, string> = {
+  Scooter: "scooter",
+  Bicicleta: "bici",
+  Moto: "moto",
+  Bicimoto: "bicimoto",
+  Trimoto: "trimoto",
+  Otro: "otro"
+};
+
+export default function ReceptionView({ repairs, onCreateRepair, isLoading, userLocalKey, userRole }: ReceptionViewProps) {
+  // Branch state (Sede)
   const [workshopBranch, setWorkshopBranch] = useState<WorkshopBranch>(
-    (userBranch as WorkshopBranch) || "lince_arenales"
+    (userLocalKey as WorkshopBranch) || "lince_arenales"
   );
+
+  // Clientes ingresados desde la app Android (colección "clientes")
+  const [androidClients, setAndroidClients] = useState<any[]>([]);
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db) return;
+    const q = query(collection(db, "clientes"), orderBy("createdAt", "desc"), limit(80));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setAndroidClients(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+      },
+      (err) => console.error("Error cargando clientes de la app Android:", err)
+    );
+    return unsub;
+  }, []);
 
   // Service Type state
   const [serviceType, setServiceType] = useState<ServiceType>("mantenimiento");
@@ -75,7 +153,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
   const [clientName, setClientName] = useState("");
   const [clientPhone, setClientPhone] = useState("");
   const [clientEmail, setClientEmail] = useState("");
-  const [clientDni, setClientDni] = useState(""); // Will hold DNI or RUC
+  const [clientDni, setClientDni] = useState(""); // Will hold DNI or C.E
 
   // DNI Search / Client Auto-fill State
   const [isSearchingClient, setIsSearchingClient] = useState(false);
@@ -210,7 +288,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
   const handleSearchClientByDni = async (targetDni?: string, autoApply: boolean = true) => {
     const queryInput = (targetDni || clientDni).trim();
     if (!queryInput) {
-      alert("Por favor ingrese un número de DNI o RUC para buscar.");
+      alert("Por favor ingrese un número de DNI, C.E o RUC para buscar.");
       return;
     }
 
@@ -219,14 +297,15 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
     setClientSearchStatus("idle");
 
     try {
-      // 1) Buscar en Firestore la colección "clientes" (registrados desde la App Android)
+      // 1) Buscar en Firestore la subcolección del local (clientes/{localKey}/clientes)
       let firestoreMatch: any | null = null;
       if (isFirebaseConfigured && db) {
         try {
-          const q = query(collection(db, "clientes"), where("dni", "==", queryInput));
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            const d = snap.docs[0].data() as any;
+          // Primero el registro propio del local
+          const localQ = query(collection(db, "clientes", workshopBranch, "clientes"), where("dni", "==", queryInput));
+          const localSnap = await getDocs(localQ);
+          if (!localSnap.empty) {
+            const d = localSnap.docs[0].data() as any;
             const appVehicleType = String(d.vehicleType || "").toLowerCase();
             firestoreMatch = {
               name: d.name || "",
@@ -237,16 +316,62 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
               vehicleModel: d.vehicleModel || "",
               vehicleType: d.vehicleType || "",
               problemDescription: d.problemDescription || "",
-              source: "App Android Litio Energy",
+              source: "Registro de local",
               vehicleTypeMap:
                 appVehicleType.includes("scooter") || appVehicleType.includes("patin")
                   ? "scooter"
-                  : appVehicleType.includes("moto")
-                    ? "moto"
-                    : appVehicleType.includes("bici") || appVehicleType.includes("bicicl")
-                      ? "bici"
-                      : "otro"
+                  : appVehicleType.includes("bicimoto") || appVehicleType.includes("bici-moto")
+                    ? "bicimoto"
+                    : appVehicleType.includes("trimoto")
+                      ? "trimoto"
+                      : appVehicleType.includes("moto")
+                        ? "moto"
+                        : appVehicleType.includes("bici") || appVehicleType.includes("bicicl")
+                          ? "bici"
+                          : "otro"
             };
+          }
+
+          // 2) Si no hay match en el local, buscar en la colección canónica (App Android)
+          if (!firestoreMatch) {
+            const q = query(collection(db, "clientes"), where("dni", "==", queryInput));
+            const snap = await getDocs(q);
+            // Acepta tanto la etiqueta de la tablet como las que usa la app Android
+            const acceptedSedes = [
+              BRANCH_TO_SEDE_LABEL[workshopBranch],
+              ...(ANDROID_SEDE_LABELS[workshopBranch] || [])
+            ].filter(Boolean);
+            for (const sdoc of snap.docs) {
+              const d = sdoc.data() as any;
+              // Cada local mantiene su propia lista de clientes (solo el local seleccionado)
+              const matchesSede = d.sedeKey === workshopBranch || acceptedSedes.includes(d.sede);
+              if (!matchesSede) continue;
+              const appVehicleType = String(d.vehicleType || "").toLowerCase();
+              firestoreMatch = {
+                name: d.name || "",
+                dni: d.dni || queryInput,
+                phone: d.phone || "",
+                email: d.email || "",
+                vehicleBrand: d.vehicleBrand || "",
+                vehicleModel: d.vehicleModel || "",
+                vehicleType: d.vehicleType || "",
+                problemDescription: d.problemDescription || "",
+                source: "App Android Litio Energy",
+                vehicleTypeMap:
+                  appVehicleType.includes("scooter") || appVehicleType.includes("patin")
+                    ? "scooter"
+                    : appVehicleType.includes("bicimoto") || appVehicleType.includes("bici-moto")
+                      ? "bicimoto"
+                      : appVehicleType.includes("trimoto")
+                        ? "trimoto"
+                        : appVehicleType.includes("moto")
+                          ? "moto"
+                          : appVehicleType.includes("bici") || appVehicleType.includes("bicicl")
+                            ? "bici"
+                            : "otro"
+              };
+              break;
+            }
           }
         } catch (e) {
           console.error("Error buscando en Firestore:", e);
@@ -262,10 +387,17 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
         return;
       }
 
-      const res = await fetch(`/api/clients/search?query=${encodeURIComponent(queryInput)}`);
-      let data = [];
-      if (res.ok) {
-        data = await res.json();
+      let data: any[] = [];
+      try {
+        const res = await fetch(`/api/clients/search?query=${encodeURIComponent(queryInput)}`);
+        if (res.ok) {
+          const ct = res.headers.get("content-type") || "";
+          if (ct.includes("application/json")) {
+            data = await res.json();
+          }
+        }
+      } catch (e) {
+        console.warn("Servidor de clientes no disponible (modo hosting).", e);
       }
 
       if (data && data.length > 0) {
@@ -278,11 +410,13 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
         }
       } else {
         const localMatch = repairs.find(
-          r => r.client?.dni?.toLowerCase().includes(queryInput.toLowerCase()) ||
-               r.client?.name?.toLowerCase().includes(queryInput.toLowerCase())
+          r =>
+            r.workshopBranch === workshopBranch &&
+            (r.client?.dni?.toLowerCase().includes(queryInput.toLowerCase()) ||
+             r.client?.name?.toLowerCase().includes(queryInput.toLowerCase()))
         );
         if (localMatch) {
-          const clientRepairs = repairs.filter(r => r.client?.dni === localMatch.client?.dni);
+          const clientRepairs = repairs.filter(r => r.workshopBranch === workshopBranch && r.client?.dni === localMatch.client?.dni);
           const foundObj = {
             name: localMatch.client.name,
             dni: localMatch.client.dni,
@@ -337,12 +471,42 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
     }
   };
 
+  // Al hacer clic en una entrada "App Android" de Ingresos Recientes, llena el formulario
+  const canFillAndroid = userRole === "jefa"; // Solo las jefas de local rellenan los datos faltantes
+  const handleApplyAndroidClient = (c: any) => {
+    handleApplyClientData({
+      name: c.name || "",
+      dni: c.dni || "",
+      phone: c.phone || "",
+      email: c.email || "",
+      vehicleTypeMap: ANDROID_TYPE_KEYS[c.vehicleType] || "otro",
+      vehicleBrand: c.vehicleBrand || "",
+      vehicleModel: c.vehicleModel || "",
+      problemDescription: c.problemDescription || ""
+    });
+    setClientSearchStatus("found");
+  };
+
+  const handleNewVehicleForClient = (clientData: any) => {
+    if (clientData.name) setClientName(clientData.name);
+    if (clientData.dni) setClientDni(clientData.dni);
+    if (clientData.phone) setClientPhone(clientData.phone);
+    if (clientData.email) setClientEmail(clientData.email);
+    if (clientData.name) setClientSignatureName(clientData.name);
+    setVehicleType("otro");
+    setBrand("");
+    setModel("");
+    setVoltage("36V");
+    setReportedFailure("");
+  };
+
   // Vehicle State
-  const [vehicleType, setVehicleType] = useState<VehicleType>("scooter");
+  const [vehicleType, setVehicleType] = useState<VehicleType>("otro");
+  const [showMotoMenu, setShowMotoMenu] = useState(false);
   const [brand, setBrand] = useState("");
   const [model, setModel] = useState("");
   const [voltage, setVoltage] = useState("36V");
-  const [batteryCondition, setBatteryCondition] = useState<'bueno' | 'regular' | 'malo' | 'no_aplica'>("bueno");
+  const [batteryCondition, setBatteryCondition] = useState<'0-1año' | '1-2años' | '2-3años' | '3-4años'>("0-1año");
   const [reportedFailure, setReportedFailure] = useState("");
 
   // Accessories State
@@ -367,28 +531,23 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
     photosTaken: false,
     notes: "", // "5. OBSERVACIONES GENERALES" in PDF
     photos: [],
-    videos: []
+    videoEvidence: []
   });
+
+  // Videos de respaldo grabados (se suben a Firebase Storage al registrar la orden)
+  const [recordedVideos, setRecordedVideos] = useState<RecordedVideo[]>([]);
 
   // Drawn conformity signatures
   const [clientSignature, setClientSignature] = useState("");
   const [tallerSignature, setTallerSignature] = useState("");
 
-  // Presupuesto y Pago State
-  const [estimatedCost, setEstimatedCost] = useState("120");
-  const [advancePayment, setAdvancePayment] = useState("0");
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("efectivo");
-  const [paymentNotes, setPaymentNotes] = useState("");
+  // Presupuesto y Pago: ahora lo maneja la jefa en la pestaña "Presupuesto y Pago"
+  // El vehículo se registra sin monto; la jefa colocará el presupuesto al diagnosticarse.
 
   // Signatures & Acceptance State
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [clientSignatureName, setClientSignatureName] = useState("");
   const [tallerSignatureName, setTallerSignatureName] = useState("Taller Litio");
-
-  // AI Suggestion State
-  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
-  const [aiDiagnostic, setAiDiagnostic] = useState<any | null>(null);
-  const [aiError, setAiError] = useState("");
 
   // UI state
   const [submitSuccess, setSubmitSuccess] = useState(false);
@@ -403,56 +562,19 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
     setVisualState(prev => ({ ...prev, [field]: value }));
   };
 
-  // Trigger Gemini API to analyze reported failure
-  const fetchAiDiagnostic = async () => {
-    if (!reportedFailure.trim()) {
-      setAiError("Por favor describe primero la falla reportada para generar sugerencias.");
-      return;
-    }
-
-    setIsGeneratingAi(true);
-    setAiError("");
-    setAiDiagnostic(null);
-
-    try {
-      const response = await fetch("/api/ai-diagnostic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          vehicleType,
-          brand,
-          model,
-          voltage,
-          reportedFailure
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error("No se pudo obtener el diagnóstico del servidor.");
-      }
-
-      const data = await response.json();
-      setAiDiagnostic(data);
-      
-      // Auto adjust estimated time/cost suggestions if the AI brings a custom estimate
-      if (data.estimatedTime.includes("3") || data.estimatedTime.includes("4")) {
-        setEstimatedCost("250");
-      } else if (data.estimatedTime.includes("5") || data.estimatedTime.includes("6")) {
-        setEstimatedCost("400");
-      }
-    } catch (error: any) {
-      console.error(error);
-      setAiError("La conexión con el asistente de IA falló temporalmente, pero puedes continuar con el ingreso manual.");
-    } finally {
-      setIsGeneratingAi(false);
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!clientName || !clientPhone || !brand || !reportedFailure) {
       alert("Por favor completa los campos obligatorios (*)");
       return;
+    }
+
+    if (clientDni && clientDni.trim()) {
+      const doc = clientDni.trim();
+      if (!/^\d{8}$/.test(doc) && !/^\d{11}$/.test(doc)) {
+        alert("El documento ingresado no es válido. Ingrese un DNI (8 dígitos) o un RUC (11 dígitos).");
+        return;
+      }
     }
 
     if (!termsAccepted) {
@@ -467,20 +589,24 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
       client: { name: clientName, phone: clientPhone, email: clientEmail, dni: clientDni },
       vehicle: { type: vehicleType, brand, model, voltage, batteryCondition, reportedFailure },
       accessories,
-      visualState,
-      aiDiagnostic,
-      estimatedCost: Number(estimatedCost) || 0,
+      visualState: {
+        ...visualState,
+        videoRecorded: recordedVideos.length > 0,
+        videoEvidence: []
+      },
+      videoEvidenceBlobs: recordedVideos,
+      estimatedCost: 0,
       actualCost: 0,
       clientSignature,
       clientSignatureName,
       tallerSignature,
       tallerSignatureName,
       payment: {
-        estimatedCost: Number(estimatedCost) || 0,
-        advancePayment: Number(advancePayment) || 0,
-        remainingBalance: Math.max(0, (Number(estimatedCost) || 0) - (Number(advancePayment) || 0)),
-        paymentMethod,
-        paymentNotes
+        estimatedCost: 0,
+        advancePayment: 0,
+        remainingBalance: 0,
+        paymentMethod: "efectivo",
+        paymentNotes: "Pendiente de presupuesto (lo define la jefa del local)."
       }
     };
 
@@ -502,11 +628,8 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
       setReportedFailure("");
       setServiceTypeDetail("");
       setAccessories({ charger: false, key: false, battery: false, helmet: false, padlock: false, others: "" });
-      setVisualState({ scratches: false, cracks: false, brakesOk: true, lightsOk: true, screenOk: true, tiresOk: true, videoRecorded: false, photosTaken: false, notes: "", photos: [], videos: [] });
-      setAiDiagnostic(null);
-      setEstimatedCost("120");
-      setAdvancePayment("0");
-      setPaymentNotes("");
+      setVisualState({ scratches: false, cracks: false, brakesOk: true, lightsOk: true, screenOk: true, tiresOk: true, videoRecorded: false, photosTaken: false, notes: "", photos: [], videoEvidence: [] });
+      setRecordedVideos([]);
       setTermsAccepted(false);
       setClientSignatureName("");
       setClientSignature("");
@@ -521,6 +644,42 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
       alert("Error al ingresar vehículo a taller.");
     }
   };
+
+  // Fusiona los ingresos de la tablet (repairs) con los de la app Android (clientes sin OT aún)
+  const recentEntries = useMemo(() => {
+    const repairKeys = new Set(
+      repairs
+        .map((r) => `${(r.client?.dni || "").trim()}|${(r.client?.phone || "").trim()}`)
+        .filter((k) => k !== "|")
+    );
+    const isAdmin = !userLocalKey;
+    const sedeLabels = isAdmin ? null : ANDROID_SEDE_LABELS[workshopBranch] || null;
+
+    const android = androidClients
+      .filter((c) => c.source !== "tablet")
+      .filter((c) => {
+        const phone = (c.phone || "").trim();
+        const dni = (c.dni || "").trim();
+        return !repairKeys.has(`${dni}|${phone}`);
+      })
+      .filter((c) => sedeLabels === null || sedeLabels.includes(c.sede))
+      .map((c) => ({
+        id: `android-${(c.phone || c.dni || "app").replace(/[^a-zA-Z0-9]/g, "")}`,
+        client: { name: c.name || "", dni: c.dni || "", phone: c.phone || "" },
+        vehicle: {
+          type: ANDROID_TYPE_KEYS[c.vehicleType] || "otro",
+          brand: c.vehicleBrand || "",
+          model: c.vehicleModel || ""
+        },
+        status: "receptioned",
+        receptionDate: c.createdAt ? new Date(c.createdAt).toISOString() : new Date().toISOString(),
+        source: "android",
+        androidRaw: c
+      }));
+
+    return [...android, ...repairs]
+      .sort((a, b) => new Date(b.receptionDate).getTime() - new Date(a.receptionDate).getTime());
+  }, [androidClients, repairs, workshopBranch, userLocalKey]);
 
 
   return (
@@ -574,17 +733,22 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                 {/* Sede Selector */}
                 <div className="flex items-center space-x-2 bg-slate-950/60 p-2 rounded-xl border border-slate-800">
                   <MapPin className="w-4 h-4 text-cyan-400" />
-                  <select
-                    value={workshopBranch}
-                    onChange={e => setWorkshopBranch(e.target.value as WorkshopBranch)}
-                    disabled={!!userBranch}
-                    className="bg-transparent text-slate-200 text-xs font-bold focus:outline-none pr-2 disabled:opacity-70 disabled:cursor-not-allowed"
-                  >
-                    <option value="lince_arenales" className="bg-slate-950 text-slate-100">Sede Arenales - San Isidro</option>
-                    <option value="surco" className="bg-slate-950 text-slate-100">Sede Surco</option>
-                    <option value="san_borja" className="bg-slate-950 text-slate-100">Sede San Borja</option>
-                    <option value="lince_leal" className="bg-slate-950 text-slate-100">Sede Jose Leal - Lince</option>
-                  </select>
+                  {userLocalKey ? (
+                    <span className="text-slate-200 text-xs font-bold pr-2">
+                      {WORKSHOP_BRANCH_LABELS[userLocalKey as WorkshopBranch]}
+                    </span>
+                  ) : (
+                    <select
+                      value={workshopBranch}
+                      onChange={e => setWorkshopBranch(e.target.value as WorkshopBranch)}
+                      className="bg-transparent text-slate-200 text-xs font-bold focus:outline-none pr-2"
+                    >
+                      <option value="lince_arenales" className="bg-slate-950 text-slate-100">Sede Arenales - San Isidro</option>
+                      <option value="surco" className="bg-slate-950 text-slate-100">Sede Surco</option>
+                      <option value="san_borja" className="bg-slate-950 text-slate-100">Sede San Borja</option>
+                      <option value="lince_leal" className="bg-slate-950 text-slate-100">Sede Jose Leal - Lince</option>
+                    </select>
+                  )}
                 </div>
               </div>
             </div>
@@ -620,9 +784,9 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Campo DNI / RUC con botón de búsqueda rápida */}
+                  {/* Campo DNI / C.E con botón de búsqueda rápida */}
                   <div className="md:col-span-1">
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">DNI / RUC *</label>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">DNI / C.E / RUC *</label>
                     <div className="relative flex space-x-2">
                       <input
                         type="text"
@@ -643,7 +807,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                             handleSearchClientByDni();
                           }
                         }}
-                        placeholder="Ej. 74839201 o 20601234567"
+                        placeholder="Ej. 74839201 (DNI) o 20123456789 (RUC)"
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-800 bg-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-slate-100 placeholder:text-slate-600 text-sm transition-all"
                       />
                       <button
@@ -651,10 +815,10 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                         onClick={() => handleSearchClientByDni()}
                         disabled={isSearchingClient}
                         className="px-3.5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl font-bold text-xs flex items-center space-x-1 shrink-0 transition-all shadow-md hover:shadow-cyan-500/20 cursor-pointer disabled:opacity-50"
-                        title="Buscar cliente registrado en el sistema por DNI"
+                        title="Buscar cliente registrado por DNI / C.E / RUC"
                       >
                         <Search className={`w-4 h-4 ${isSearchingClient ? "animate-spin" : ""}`} />
-                        <span className="hidden sm:inline">Buscar DNI</span>
+                        <span className="hidden sm:inline">Buscar Doc</span>
                       </button>
                     </div>
                   </div>
@@ -744,6 +908,16 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                         <span>Auto-completar Datos del Cliente</span>
                       </button>
 
+                      <button
+                        type="button"
+                        onClick={() => handleNewVehicleForClient(foundClientData)}
+                        className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded-xl font-bold text-xs flex items-center space-x-1.5 transition-all border border-slate-700 cursor-pointer"
+                        title="Mantiene los datos del cliente y limpia los datos del vehículo para registrar uno nuevo"
+                      >
+                        <PlusCircle className="w-4 h-4" />
+                        <span>Registrar Otro Vehículo</span>
+                      </button>
+
                       {foundClientData.vehiclesHistory && foundClientData.vehiclesHistory.length > 0 && (
                         <div className="w-full mt-2 pt-2 border-t border-slate-800">
                           <span className="block text-[10px] uppercase font-bold text-slate-400 mb-1.5 flex items-center gap-1">
@@ -774,7 +948,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                 {clientSearchStatus === "not_found" && (
                   <div className="p-3 bg-amber-950/30 border border-amber-500/20 rounded-xl text-xs text-amber-300 flex items-center space-x-2">
                     <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
-                    <span>No se encontraron registros previos para el DNI/RUC ingresado. Proceda ingresando los datos del cliente nuevo.</span>
+                    <span>No se encontraron registros previos para el DNI/C.E ingresado. Proceda ingresando los datos del cliente nuevo.</span>
                   </div>
                 )}
               </div>
@@ -791,29 +965,88 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                 <div>
                   <span className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Tipo de Vehículo *</span>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {[
-                      { value: "scooter", label: "Scooter / Patinete", desc: "Monopatines eléctricos" },
-                      { value: "moto", label: "Moto Eléctrica", desc: "Motos y ciclomotores" },
-                      { value: "bici", label: "Bici Eléctrica", desc: "e-Bikes urbanas / montaña" },
-                      { value: "otro", label: "Otro Vehículo", desc: "Monociclos, triciclos" }
-                    ].map(opt => (
+                    <button
+                      type="button"
+                      onClick={() => { setVehicleType("scooter"); setBrand(""); }}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        vehicleType === "scooter"
+                          ? "bg-cyan-500/10 border-cyan-500/50 text-cyan-400 ring-2 ring-cyan-500/10 font-bold"
+                          : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900"
+                      }`}
+                    >
+                      <p className="text-sm font-semibold">🛴 Scooter</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 leading-none">Scooter eléctrico</p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setVehicleType("bici"); setBrand(""); }}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        vehicleType === "bici"
+                          ? "bg-cyan-500/10 border-cyan-500/50 text-cyan-400 ring-2 ring-cyan-500/10 font-bold"
+                          : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900"
+                      }`}
+                    >
+                      <p className="text-sm font-semibold">🚲 Bicicletas</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 leading-none">Bicicleta eléctrica</p>
+                    </button>
+                    <div className="relative">
                       <button
                         type="button"
-                        key={opt.value}
-                        onClick={() => {
-                          setVehicleType(opt.value as VehicleType);
-                          setBrand(""); 
-                        }}
-                        className={`p-3 rounded-xl border text-left transition-all ${
-                          vehicleType === opt.value
+                        onClick={() => { setVehicleType("moto"); setBrand(""); }}
+                        className={`w-full p-3 rounded-xl border text-left transition-all ${
+                          ["moto", "bicimoto", "trimoto"].includes(vehicleType)
                             ? "bg-cyan-500/10 border-cyan-500/50 text-cyan-400 ring-2 ring-cyan-500/10 font-bold"
                             : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900"
                         }`}
                       >
-                        <p className="text-sm font-semibold">{opt.label}</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5 leading-none">{opt.desc}</p>
+                        <p className="text-sm font-semibold">🏍️ Motos</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5 leading-none">
+                          {vehicleType === "bicimoto" ? "Bicimoto" : vehicleType === "trimoto" ? "Trimoto" : "Motos"}
+                        </p>
                       </button>
-                    ))}
+                      <button
+                        type="button"
+                        aria-label="Más opciones de motos"
+                        onClick={() => setShowMotoMenu(v => !v)}
+                        className="absolute top-1.5 right-1.5 w-6 h-6 flex items-center justify-center rounded-md bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200 text-sm font-bold leading-none"
+                      >
+                        ⋯
+                      </button>
+                      {showMotoMenu && (
+                        <div className="absolute z-20 mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 shadow-xl overflow-hidden">
+                          {[
+                            { value: "bicimoto", label: "Bicimoto" },
+                            { value: "moto", label: "Motos" },
+                            { value: "trimoto", label: "Trimotos" }
+                          ].map(opt => (
+                            <button
+                              type="button"
+                              key={opt.value}
+                              onClick={() => { setVehicleType(opt.value as VehicleType); setBrand(""); setShowMotoMenu(false); }}
+                              className={`w-full px-3 py-2.5 text-sm text-left transition-colors ${
+                                vehicleType === opt.value
+                                  ? "bg-cyan-500/10 text-cyan-400 font-bold"
+                                  : "text-slate-300 hover:bg-slate-800"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setVehicleType("otro"); setBrand(""); }}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        vehicleType === "otro"
+                          ? "bg-cyan-500/10 border-cyan-500/50 text-cyan-400 ring-2 ring-cyan-500/10 font-bold"
+                          : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900"
+                      }`}
+                    >
+                      <p className="text-sm font-semibold">Otros</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 leading-none">Monociclos, triciclos, otros</p>
+                    </button>
                   </div>
                 </div>
 
@@ -868,13 +1101,13 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Condición de Batería Física</label>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Vida útil de la Batería</label>
                     <div className="grid grid-cols-4 gap-1.5">
                       {[
-                        { value: "bueno", label: "Bueno" },
-                        { value: "regular", label: "Regular" },
-                        { value: "malo", label: "Malo" },
-                        { value: "no_aplica", label: "N/A" }
+                        { value: "0-1año", label: "0-1 año" },
+                        { value: "1-2años", label: "1-2 años" },
+                        { value: "2-3años", label: "2-3 años" },
+                        { value: "3-4años", label: "3-4 años" }
                       ].map(opt => (
                         <button
                           type="button"
@@ -896,24 +1129,16 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                 {/* Síntomas / Falla reportada */}
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Sintoma / Falla Reportada por el Cliente *</label>
-                  <textarea
-                    rows={3}
-                    required
-                    value={reportedFailure}
-                    onChange={e => setReportedFailure(e.target.value)}
-                    placeholder="Ej. El motor da tirones al acelerar, la batería no carga más del 50%, ruidos extraños en freno..."
-                    className="w-full px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-slate-100 placeholder:text-slate-600 text-sm transition-all"
-                  />
-                  <div className="flex justify-end mt-2">
-                    <button
-                      type="button"
-                      onClick={fetchAiDiagnostic}
-                      disabled={isGeneratingAi}
-                      className="flex items-center space-x-1.5 bg-slate-950 text-cyan-400 border border-cyan-500/30 hover:border-cyan-400 px-4 py-2 rounded-xl text-xs font-bold shadow-[0_0_15px_rgba(6,182,212,0.1)] transition-all hover:bg-slate-900 disabled:opacity-50"
-                    >
-                      <Sparkles className={`w-3.5 h-3.5 ${isGeneratingAi ? "animate-spin text-cyan-400" : ""}`} />
-                      <span>{isGeneratingAi ? "Generando diagnóstico..." : "Asistente de Diagnóstico IA"}</span>
-                    </button>
+                  <div className="relative">
+                    <textarea
+                      rows={3}
+                      required
+                      value={reportedFailure}
+                      onChange={e => setReportedFailure(e.target.value)}
+                      placeholder="Ej. El motor da tirones al acelerar, la batería no carga más del 50%, ruidos extraños en freno..."
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-slate-100 placeholder:text-slate-600 text-sm transition-all"
+                    />
+                    <SpeechToTextButton onResult={(t) => setReportedFailure(prev => prev ? prev + " " + t : t)} label="síntoma" />
                   </div>
                 </div>
               </div>
@@ -1015,7 +1240,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
               </div>
 
 
-              {/* SECCIÓN 5: OBSERVACIONES GENERALES Y EVIDENCIA */}
+              {/* SECCIÓN 5: INSPECCIÓN VISUAL Y EVIDENCIA */}
               <div className="space-y-4">
                 <div className="flex items-center space-x-2 border-b border-slate-800 pb-2 text-slate-100">
                   <Gauge className="w-5 h-5 text-cyan-400" />
@@ -1073,108 +1298,62 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                   subtitle="Registra las fotos directamente en la memoria de esta tablet."
                 />
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Observaciones Generales</label>
-                  <textarea
-                    rows={2}
-                    value={visualState.notes}
-                    onChange={e => handleVisualStateChange("notes", e.target.value)}
-                    placeholder="Escribe comentarios generales sobre el chasis, partes sueltas u otras especificaciones visuales..."
-                    className="w-full px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-slate-100 text-sm transition-all"
-                  />
-                </div>
-              </div>
+                {/* Video de respaldo (evidencia ante reclamos) */}
+                <VideoRecorder
+                  onRecorded={(v) => setRecordedVideos(prev => [...prev, v])}
+                  branchLabel={WORKSHOP_BRANCH_LABELS[workshopBranch]}
+                />
 
-
-              {/* SECCIÓN 6: PRESUPUESTO Y PAGO (8 in PDF) */}
-              <div className="space-y-4">
-                <div className="flex items-center space-x-2 border-b border-slate-800 pb-2 text-slate-100">
-                  <CreditCard className="w-5 h-5 text-cyan-400" />
-                  <h3 className="font-display font-bold text-sm uppercase tracking-wider">6. Presupuesto y Pago</h3>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Total Estimado (S/.)</label>
-                    <div className="relative">
-                      <span className="absolute left-3.5 top-2.5 text-slate-500 font-bold text-sm">S/.</span>
-                      <input
-                        type="number"
-                        value={estimatedCost}
-                        onChange={e => setEstimatedCost(e.target.value)}
-                        placeholder="120"
-                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-100 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-cyan-400 font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Adelanto (S/.)</label>
-                    <div className="relative">
-                      <span className="absolute left-3.5 top-2.5 text-slate-500 font-bold text-sm">S/.</span>
-                      <input
-                        type="number"
-                        value={advancePayment}
-                        onChange={e => setAdvancePayment(e.target.value)}
-                        placeholder="0"
-                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-100 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-amber-400 font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Saldo Pendiente (S/.)</label>
-                    <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-xl font-mono text-sm font-black text-rose-400 flex items-center h-[46px]">
-                      S/. {Math.max(0, (Number(estimatedCost) || 0) - (Number(advancePayment) || 0))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Método de Pago</label>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {[
-                        { value: "efectivo", label: "Efectivo" },
-                        { value: "transferencia", label: "Transf." },
-                        { value: "yape_plin", label: "Yape/Plin" },
-                        { value: "tarjeta", label: "Tarjeta" }
-                      ].map(opt => (
-                        <button
-                          type="button"
-                          key={opt.value}
-                          onClick={() => setPaymentMethod(opt.value as PaymentMethod)}
-                          className={`py-2 text-xs rounded-xl border font-bold transition-all ${
-                            paymentMethod === opt.value
-                              ? "bg-cyan-500/10 border-cyan-500/50 text-cyan-400"
-                              : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900"
-                          }`}
+                {recordedVideos.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] uppercase font-black text-slate-500 tracking-wider">
+                      Videos de respaldo pendientes ({recordedVideos.length})
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {recordedVideos.map((v, idx) => (
+                        <div
+                          key={idx}
+                          className="relative flex flex-col items-center justify-center gap-1 rounded-lg border border-cyan-800/40 bg-slate-950 p-3 text-center"
                         >
-                          {opt.label}
-                        </button>
+                          <Video className="w-5 h-5 text-cyan-400" />
+                          <span className="text-[9px] font-mono text-slate-400">
+                            {v.durationSec}s · {(v.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setRecordedVideos(prev => prev.filter((_, i) => i !== idx))}
+                            className="absolute top-1 right-1 p-1 bg-slate-950/80 border border-slate-800 text-rose-400 hover:text-rose-300 rounded-md"
+                            title="Quitar video"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>
+                )}
 
-                  <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Observaciones de Pago</label>
-                    <input
-                      type="text"
-                      value={paymentNotes}
-                      onChange={e => setPaymentNotes(e.target.value)}
-                      placeholder="Ej. Pagado por Yape al ingreso..."
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Observaciones Generales</label>
+                  <div className="relative">
+                    <textarea
+                      rows={2}
+                      value={visualState.notes}
+                      onChange={e => handleVisualStateChange("notes", e.target.value)}
+                      placeholder="Escribe o dicta por voz comentarios generales sobre el chasis, partes sueltas u otras especificaciones visuales..."
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-slate-100 text-sm transition-all"
                     />
+                    <SpeechToTextButton onResult={(t) => handleVisualStateChange("notes", visualState.notes ? visualState.notes + " " + t : t)} label="observaciones" />
                   </div>
                 </div>
               </div>
 
 
-              {/* SECCIÓN 7: TÉRMINOS Y CONDICIONES (6 in PDF) & CONFORMIDAD */}
+              {/* SECCIÓN 6: TÉRMINOS, FIRMAS Y CONFORMIDAD */}
               <div className="space-y-4">
                 <div className="flex items-center space-x-2 border-b border-slate-800 pb-2 text-slate-100">
                   <FileSignature className="w-5 h-5 text-cyan-400" />
-                  <h3 className="font-display font-bold text-sm uppercase tracking-wider">7. Términos, Firmas y Conformidad</h3>
+                  <h3 className="font-display font-bold text-sm uppercase tracking-wider">6. Términos, Firmas y Conformidad</h3>
                 </div>
 
                 {/* Resumen de términos tal cual el PDF */}
@@ -1278,138 +1457,28 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
         </div>
 
 
-        {/* PANEL LATERAL DE DIAGNÓSTICO IA (TOMA 1/3 DE LA PANTALLA) */}
+        {/* COLUMNA LATERAL (TOMA 1/3 DE LA PANTALLA) */}
         <div className="space-y-6">
-          
-          {/* ASISTENTE COMPLEMENTARIO DE IA */}
-          <div className="bg-slate-900 rounded-2xl border border-slate-800 text-white shadow-xl overflow-hidden relative">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-emerald-500/10 to-cyan-500/10 rounded-full blur-2xl"></div>
-            
-            <div className="p-6 relative">
-              <div className="flex items-center space-x-2 mb-4">
-                <div className="p-1.5 bg-emerald-500/10 rounded-lg text-emerald-400 border border-emerald-500/20">
-                  <Sparkles className="w-5 h-5 text-emerald-400" />
-                </div>
-                <div>
-                  <h3 className="font-display font-bold text-base text-emerald-300">Asistente Técnico Litio</h3>
-                  <p className="text-[10px] text-slate-400 uppercase tracking-widest font-mono">Powered by Gemini AI</p>
-                </div>
-              </div>
-
-              {isGeneratingAi ? (
-                <div className="py-12 flex flex-col items-center justify-center space-y-4 text-center">
-                  <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin" />
-                  <div>
-                    <p className="text-sm font-semibold text-slate-200">Analizando el comportamiento del motor...</p>
-                    <p className="text-xs text-slate-500 mt-1">Calculando causas probables y pautas de seguridad específicas</p>
-                  </div>
-                </div>
-              ) : aiDiagnostic ? (
-                <div className="space-y-5 animate-fade-in text-sm">
-                  
-                  {/* Causas Probables */}
-                  <div>
-                    <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-2 flex items-center space-x-1.5">
-                      <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full"></span>
-                      <span>Causas Probables</span>
-                    </h4>
-                    <ul className="space-y-1.5 text-xs text-slate-300 list-disc list-inside">
-                      {aiDiagnostic.probableCauses.map((cause: string, idx: number) => (
-                        <li key={idx} className="leading-relaxed pl-1">{cause}</li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  {/* Procedimientos Sugeridos */}
-                  <div>
-                    <h4 className="text-xs font-bold text-cyan-400 uppercase tracking-wider mb-2 flex items-center space-x-1.5">
-                      <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full"></span>
-                      <span>Rutina de Diagnóstico</span>
-                    </h4>
-                    <ul className="space-y-1.5 text-xs text-slate-300">
-                      {aiDiagnostic.testProcedures.map((proc: string, idx: number) => (
-                        <li key={idx} className="flex items-start space-x-1.5 leading-relaxed">
-                          <span className="text-cyan-500 font-bold font-mono text-[10px] bg-cyan-950/40 border border-cyan-800/30 px-1 rounded mt-0.5">{idx + 1}</span>
-                          <span>{proc}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  {/* Repuestos recomendados */}
-                  <div>
-                    <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-2 flex items-center space-x-1.5">
-                      <span className="w-1.5 h-1.5 bg-amber-400 rounded-full"></span>
-                      <span>Repuestos Sugeridos</span>
-                    </h4>
-                    <div className="flex flex-wrap gap-1">
-                      {aiDiagnostic.suggestedParts.map((part: string, idx: number) => (
-                        <span key={idx} className="text-[10px] bg-amber-950/30 border border-amber-900/40 text-amber-300 font-medium px-2 py-0.5 rounded-md">
-                          {part}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Tiempo estimado */}
-                  <div className="flex justify-between items-center bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
-                    <span className="text-xs text-slate-400">Tiempo de Taller:</span>
-                    <span className="text-sm font-bold text-cyan-300 font-mono">{aiDiagnostic.estimatedTime}</span>
-                  </div>
-
-                  {/* Alerta de Seguridad de IA */}
-                  {aiDiagnostic.aiNote && (
-                    <div className="p-3 bg-rose-950/20 border border-rose-900/30 text-rose-300 rounded-xl text-xs leading-relaxed flex items-start space-x-2">
-                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                      <span>{aiDiagnostic.aiNote}</span>
-                    </div>
-                  )}
-
-                  <div className="text-[10px] text-slate-500 pt-1 text-center border-t border-slate-800">
-                    Sugerencias aplicadas automáticamente al registro de recepción.
-                  </div>
-
-                </div>
-              ) : (
-                <div className="py-8 text-center text-slate-500 space-y-3">
-                  <div className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center mx-auto">
-                    <Sparkles className="w-5 h-5 text-slate-600" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold text-slate-400">¿Necesitas soporte técnico de entrada?</p>
-                    <p className="text-[11px] text-slate-500 mt-1 max-w-xs mx-auto leading-relaxed">
-                      Completa los detalles de la falla reportada y haz clic en <strong>Asistente de Diagnóstico IA</strong> para predecir fallas eléctricas y rutinas paso a paso.
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {aiError && (
-                <div className="mt-3 p-3 bg-amber-950/20 border border-amber-900/40 text-amber-300 rounded-xl text-xs">
-                  {aiError}
-                </div>
-              )}
-
-            </div>
-          </div>
 
 
           {/* HISTORIAL RECIENTE DE VEHÍCULOS (VISTA RÁPIDA TABLET) */}
           <div className="bg-slate-900 rounded-2xl border border-slate-800 p-6 shadow-sm">
             <h3 className="font-display font-bold text-sm text-slate-100 uppercase tracking-wider mb-4 flex items-center justify-between">
               <span>Ingresos Recientes</span>
-              <span className="text-xs bg-slate-950 text-slate-400 px-2.5 py-0.5 rounded-full font-mono border border-slate-800">{repairs.length} total</span>
+              <span className="text-xs bg-slate-950 text-slate-400 px-2.5 py-0.5 rounded-full font-mono border border-slate-800">{recentEntries.length} total</span>
             </h3>
 
             <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
-              {repairs.length === 0 ? (
+              {recentEntries.length === 0 ? (
                 <p className="text-xs text-slate-500 text-center py-6">No hay vehículos registrados hoy.</p>
               ) : (
-                repairs.map(rep => {
+                recentEntries.map(rep => {
                   const typeIcons: Record<string, string> = {
                     scooter: "🛴",
-                    moto: "🏍️",
                     bici: "🚲",
+                    moto: "🏍️",
+                    bicimoto: "🛵",
+                    trimoto: "🛺",
                     otro: "🔋"
                   };
                   
@@ -1434,12 +1503,22 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                   };
 
                   return (
-                    <div key={rep.id} className="p-3 bg-slate-950 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs hover:bg-slate-900 transition-colors group">
+                    <div
+                      key={rep.id}
+                      onClick={rep.source === "android" && canFillAndroid ? () => handleApplyAndroidClient(rep.androidRaw) : undefined}
+                      className={`p-3 bg-slate-950 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs hover:bg-slate-900 transition-colors group ${rep.source === "android" && canFillAndroid ? "cursor-pointer border-green-500/20 hover:border-green-500/50" : ""}`}
+                      title={rep.source === "android" && canFillAndroid ? "Clic para llenar el formulario con los datos de la app Android" : undefined}
+                    >
                       <div className="space-y-1">
                         <div className="flex items-center space-x-1.5">
-                          <span className="font-bold text-cyan-400 font-mono">{rep.id.slice(0, 8)}</span>
+                          <span className="font-bold text-cyan-400 font-mono">{rep.id.startsWith("android-") ? rep.id.slice(8) : rep.id.slice(0, 8)}</span>
                           <span className="text-slate-700">|</span>
                           <span className="font-semibold text-slate-200">{rep.client.name}</span>
+                          {rep.source === "android" && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-green-950/60 border border-green-500/30 text-green-400 text-[9px] font-bold tracking-wide uppercase ml-1">
+                              📱 App Android
+                            </span>
+                          )}
                         </div>
                         <p className="text-slate-400 text-[11px] truncate max-w-[150px]">
                           {typeIcons[rep.vehicle.type] || "🔋"} {rep.vehicle.brand} {rep.vehicle.model}
@@ -1447,6 +1526,11 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                       </div>
 
                       <div className="flex items-center space-x-2">
+                        {rep.source === "android" ? (
+                          <span className={`px-2 py-1 text-[9px] font-bold uppercase tracking-wide ${canFillAndroid ? "text-green-400/80" : "text-slate-600"}`}>
+                            {canFillAndroid ? "Clic para llenar ⤴" : "Solo lectura"}
+                          </span>
+                        ) : (
                         <button
                           type="button"
                           onClick={() => generateRepairPdf(rep)}
@@ -1455,6 +1539,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                         >
                           <Printer className="w-3.5 h-3.5" />
                         </button>
+                        )}
                         <div className="text-right space-y-1">
                           <span className={`inline-block px-2 py-0.5 rounded-full border text-[10px] font-bold leading-none ${statusColors[rep.status] || "bg-slate-950 text-slate-400"}`}>
                             {statusLabels[rep.status] || rep.status}
@@ -1610,7 +1695,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
     if (!data || data.length <= 1) return ContentService.createTextOutput(JSON.stringify([])).setMimeType(ContentService.MimeType.JSON);
     
     var headers = data[0].map(function(h) { return String(h).toLowerCase().trim(); });
-    var dniIdx = headers.findIndex(function(h) { return h.includes("dni") || h.includes("ruc") || h.includes("doc"); });
+    var dniIdx = headers.findIndex(function(h) { return h.includes("dni") || h.includes("ruc") || h.includes("doc") || h.includes("ce") || h.includes("c.e") || h.includes("carnet"); });
     var nameIdx = headers.findIndex(function(h) { return h.includes("nombre") || h.includes("cliente"); });
     var phoneIdx = headers.findIndex(function(h) { return h.includes("tel") || h.includes("cel") || h.includes("phone"); });
     var emailIdx = headers.findIndex(function(h) { return h.includes("email") || h.includes("correo"); });
@@ -1654,7 +1739,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
     if (!data || data.length <= 1) return ContentService.createTextOutput(JSON.stringify([])).setMimeType(ContentService.MimeType.JSON);
     
     var headers = data[0].map(function(h) { return String(h).toLowerCase().trim(); });
-    var dniIdx = headers.findIndex(function(h) { return h.includes("dni") || h.includes("ruc") || h.includes("doc"); });
+    var dniIdx = headers.findIndex(function(h) { return h.includes("dni") || h.includes("ruc") || h.includes("doc") || h.includes("ce") || h.includes("c.e") || h.includes("carnet"); });
     var nameIdx = headers.findIndex(function(h) { return h.includes("nombre") || h.includes("cliente"); });
     var phoneIdx = headers.findIndex(function(h) { return h.includes("tel") || h.includes("cel") || h.includes("phone"); });
     var emailIdx = headers.findIndex(function(h) { return h.includes("email") || h.includes("correo"); });
@@ -1718,7 +1803,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                         Haz clic o arrastra tu archivo Excel / CSV de clientes aquí
                       </span>
                       <p className="text-[11px] text-slate-500 mt-1">
-                        Soporta columnas de DNI, RUC, Nombre, Celular, Email, Modelo de Vehículo
+                        Soporta columnas de DNI, C.E, Nombre, Celular, Email, Modelo de Vehículo
                       </p>
                     </div>
                   </div>

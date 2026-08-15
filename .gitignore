@@ -1,9 +1,16 @@
 node_modules/
-package-lock.json
 build/
 dist/
+dist-taller/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
+.firebase/
+repairs.json
+inspect-repairs.mjs
+lifecycle.json
+backup_evidencias.bat
+README.md
+informe mantenimiento.png
