@@ -92,15 +92,17 @@ export default function Header({ currentTab, setCurrentTab, isPolling, onRefresh
                 </button>
               </div>
 
-              {/* Botón Escanear Tablet */}
-              <button
-                onClick={() => setShowTabletModal(true)}
-                className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-950 hover:bg-slate-900 text-cyan-400 hover:text-cyan-300 border border-slate-800 rounded-xl text-xs font-bold transition-all shadow-[0_0_10px_rgba(6,182,212,0.15)]"
-                title="Abrir en tu Tablet o Celular"
-              >
-                <QrCode className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Abrir en Tablet</span>
-              </button>
+              {/* Botón Escanear Tablet - Solo Admin */}
+              {currentUser.role === "admin" && (
+                <button
+                  onClick={() => setShowTabletModal(true)}
+                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-950 hover:bg-slate-900 text-cyan-400 hover:text-cyan-300 border border-slate-800 rounded-xl text-xs font-bold transition-all shadow-[0_0_10px_rgba(6,182,212,0.15)]"
+                  title="Abrir en tu Tablet o Celular"
+                >
+                  <QrCode className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Abrir en Tablet</span>
+                </button>
+              )}
 
               <button
                 onClick={onRefresh}

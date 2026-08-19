@@ -31,7 +31,8 @@ import {
   X,
   Table,
   CloudDownload,
-  Mic
+  Mic,
+  MessageCircle
 } from "lucide-react";
 import { RepairItem, VehicleType, VisualState, Accessories, WorkshopBranch, ServiceType } from "../types";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
@@ -553,6 +554,52 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [createdId, setCreatedId] = useState("");
   const [lastCreatedRepair, setLastCreatedRepair] = useState<RepairItem | null>(null);
+  const [sendingWa, setSendingWa] = useState(false);
+
+  const buildWelcomeMessage = (r: RepairItem): string => {
+    const typeLabels: Record<string, string> = {
+      scooter: "Scooter", bici: "Bicicleta", moto: "Moto",
+      bicimoto: "Bicimoto", trimoto: "Trimoto", otro: "Otro"
+    };
+    const svcLabels: Record<string, string> = {
+      mantenimiento: "Mantenimiento", diagnostico: "Diagnóstico",
+      garantia: "Garantía", cambio: "Cambio", express: "Express"
+    };
+    const recepcionLink = `${window.location.origin}${window.location.pathname}recepcion/${r.id}`;
+    const terminosLink = `${window.location.origin}${window.location.pathname}terminos`;
+    const lines: string[] = [
+      `Hola *${r.client.name}* 👋`,
+      "",
+      "Somos *Litio Energy*, taller especialista en vehículos eléctricos.",
+      "",
+      "Tu vehículo ha sido ingresado correctamente a nuestra sede *" + (WORKSHOP_BRANCH_LABELS[r.workshopBranch] || r.workshopBranch) + "*.",
+      "",
+      "Haz clic en el siguiente enlace para ver los detalles y confirmar el ingreso:",
+      recepcionLink,
+      "",
+      "¿Confirmas el ingreso de tu vehículo?",
+      "",
+      "Gracias por confiar en *Litio Energy* ⚡"
+    ];
+    return lines.join("\n");
+  };
+
+  const shareWelcomeWhatsApp = async () => {
+    if (!lastCreatedRepair) return;
+    if (!lastCreatedRepair.client.phone) {
+      alert("El cliente no tiene teléfono registrado.");
+      return;
+    }
+    setSendingWa(true);
+    try {
+      const message = buildWelcomeMessage(lastCreatedRepair);
+      const digits = (lastCreatedRepair.client.phone || "").replace(/[^\d]/g, "");
+      const waPhone = digits.startsWith("51") ? digits : digits.length === 9 ? "51" + digits : digits;
+      window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(message)}`, "_blank");
+    } finally {
+      setSendingWa(false);
+    }
+  };
 
   const handleAccessoriesChange = (field: keyof Accessories, value: any) => {
     setAccessories(prev => ({ ...prev, [field]: value }));
@@ -637,7 +684,6 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
       
       setTimeout(() => {
         setSubmitSuccess(false);
-        setLastCreatedRepair(null);
       }, 15000);
     } catch (err) {
       console.error(err);
@@ -706,7 +752,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
               className="flex items-center space-x-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all self-start sm:self-center shrink-0 cursor-pointer shadow-lg hover:shadow-emerald-500/20"
             >
               <Printer className="w-4 h-4" />
-              <span>Imprimir Ficha de Ingreso</span>
+              <span>Imprimir Ficha</span>
             </button>
           )}
         </div>
@@ -1439,14 +1485,27 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
 
               {/* ACCIÓN PRINCIPAL DE ENVÍO */}
               <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full bg-gradient-to-r from-cyan-500 to-cyan-600 hover:from-cyan-400 hover:to-cyan-500 text-slate-950 py-3.5 px-6 rounded-xl font-bold text-sm tracking-wide shadow-[0_4px_25px_rgba(6,182,212,0.25)] hover:scale-[1.005] active:scale-[0.995] transition-all flex items-center justify-center space-x-2 disabled:opacity-55"
-                >
-                  <PlusCircle className="w-5 h-5" />
-                  <span>{isLoading ? "Ingresando a taller..." : "REGISTRAR VEHÍCULO E INGRESO EN COLA"}</span>
-                </button>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="flex-1 bg-gradient-to-r from-cyan-500 to-cyan-600 hover:from-cyan-400 hover:to-cyan-500 text-slate-950 py-3.5 px-6 rounded-xl font-bold text-sm tracking-wide shadow-[0_4px_25px_rgba(6,182,212,0.25)] hover:scale-[1.005] active:scale-[0.995] transition-all flex items-center justify-center space-x-2 disabled:opacity-55"
+                  >
+                    <PlusCircle className="w-5 h-5" />
+                    <span>{isLoading ? "Ingresando a taller..." : "REGISTRAR VEHÍCULO E INGRESO EN COLA"}</span>
+                  </button>
+                  {lastCreatedRepair && (
+                    <button
+                      type="button"
+                      onClick={shareWelcomeWhatsApp}
+                      disabled={sendingWa}
+                      className="flex-1 sm:flex-none bg-[#25D366] hover:bg-[#20bd5a] text-white py-3.5 px-6 rounded-xl font-bold text-sm tracking-wide shadow-[0_4px_25px_rgba(37,211,102,0.25)] transition-all flex items-center justify-center space-x-2 disabled:opacity-50"
+                    >
+                      <MessageCircle className="w-5 h-5" />
+                      <span>{sendingWa ? "Abriendo..." : "Enviar Bienvenida WhatsApp"}</span>
+                    </button>
+                  )}
+                </div>
                 <p className="text-[10px] text-slate-500 text-center mt-2.5 font-mono">
                   Gracias por confiar en LITIO ENERGY • Av. Arenales, Surco, San Borja & Jose Leal
                 </p>

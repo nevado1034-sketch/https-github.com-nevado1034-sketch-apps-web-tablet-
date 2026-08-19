@@ -9,6 +9,9 @@ import ExpressView from "./components/ExpressView";
 import QualityControlView from "./components/QualityControlView";
 import PresupuestoView from "./components/PresupuestoView";
 import OrdenPublica from "./components/OrdenPublica";
+import RecepcionPublica from "./components/RecepcionPublica";
+import TerminosCondiciones from "./components/TerminosCondiciones";
+import GarantiaCondiciones from "./components/GarantiaCondiciones";
 import AuthScreen from "./components/AuthScreen";
 import AccessManager from "./components/AccessManager";
 import { RepairItem, WorkshopStats, VideoEvidence } from "./types";
@@ -139,13 +142,42 @@ export default function App() {
     return m ? decodeURIComponent(m[1]) : null;
   });
 
+  // Ruta pública: /recepcion/{id} - Confirmación de ingreso del cliente (URL limpia)
+  const [publicReceptionId, setPublicReceptionId] = useState<string | null>(() => {
+    const p = window.location.pathname;
+    const m = p.match(/^\/recepcion\/(.+)$/);
+    if (m) return decodeURIComponent(m[1]);
+    const hm = window.location.hash.match(/^#\/recepcion\/(.+)$/);
+    return hm ? decodeURIComponent(hm[1]) : null;
+  });
+
+  // Ruta pública: /terminos - Términos y Condiciones (URL limpia)
+  const [showTerminos, setShowTerminos] = useState<boolean>(() => {
+    return window.location.pathname === "/terminos" || window.location.hash === "#/terminos";
+  });
+
+  // Ruta pública: /garantia - Condiciones de Garantía
+  const [showGarantia, setShowGarantia] = useState<boolean>(() => {
+    return window.location.pathname === "/garantia" || window.location.hash === "#/garantia";
+  });
+
   useEffect(() => {
     const onHash = () => {
       const m = window.location.hash.match(/^#\/orden\/(.+)$/);
       setPublicOrderId(m ? decodeURIComponent(m[1]) : null);
+      const p = window.location.pathname;
+      const rm = p.match(/^\/recepcion\/(.+)$/);
+      const rhm = window.location.hash.match(/^#\/recepcion\/(.+)$/);
+      setPublicReceptionId(rm ? decodeURIComponent(rm[1]) : rhm ? decodeURIComponent(rhm[1]) : null);
+      setShowTerminos(window.location.pathname === "/terminos" || window.location.hash === "#/terminos");
+      setShowGarantia(window.location.pathname === "/garantia" || window.location.hash === "#/garantia");
     };
     window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener("popstate", onHash);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("popstate", onHash);
+    };
   }, []);
 
   // Sincroniza la configuración de accesos con Firestore para que sea la misma en todos los dispositivos
@@ -529,6 +561,18 @@ export default function App() {
 
   if (publicOrderId) {
     return <OrdenPublica orderId={publicOrderId} />;
+  }
+
+  if (publicReceptionId) {
+    return <RecepcionPublica orderId={publicReceptionId} />;
+  }
+
+  if (showTerminos) {
+    return <TerminosCondiciones />;
+  }
+
+  if (showGarantia) {
+    return <GarantiaCondiciones />;
   }
 
   if (!authConfigReady) {

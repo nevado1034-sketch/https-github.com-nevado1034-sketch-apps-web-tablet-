@@ -130,6 +130,8 @@ export interface RepairItem {
   approvalStatus?: "pendiente" | "aprobado" | "rechazado"; // Respuesta del cliente vía WhatsApp
   approvalResponseAt?: string; // Fecha/hora en que el cliente respondió
   serviceAuthorized?: boolean; // True cuando el presupuesto fue aprobado por el cliente y guardado por la jefa
+  clientEntryApproval?: "pendiente" | "aprobado" | "rechazado"; // Respuesta del cliente al ingreso del vehículo
+  clientEntryResponseAt?: string; // Fecha/hora en que el cliente respondió al ingreso
 }
 
 // Ítem binario del checklist de calidad: en buen estado / para cambio

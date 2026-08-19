@@ -4,12 +4,10 @@ import { RepairItem } from "../types";
 import litioLogo from "../assets/litio-logo.png";
 import {
   Battery,
-  Camera,
   Calendar,
+  Camera,
   CheckCircle2,
   ClipboardList,
-  CreditCard,
-  ExternalLink,
   FileText,
   Loader2,
   MapPin,
@@ -20,10 +18,11 @@ import {
   Video,
   Wrench,
   XCircle,
-  Zap
+  Zap,
+  ExternalLink
 } from "lucide-react";
 
-interface OrdenPublicaProps {
+interface RecepcionPublicaProps {
   orderId: string;
 }
 
@@ -51,17 +50,7 @@ const serviceLabels: Record<string, string> = {
   express: "Servicio Express"
 };
 
-const methodLabels: Record<string, string> = {
-  efectivo: "Efectivo",
-  transferencia: "Transferencia",
-  yape_plin: "Yape/Plin",
-  tarjeta: "Tarjeta"
-};
-
-const fmt = (n?: number): string =>
-  `S/ ${(Number(n) || 0).toFixed(2)}`;
-
-export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
+export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
   const [repair, setRepair] = useState<RepairItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,29 +73,25 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
           setRepair(snap.data() as RepairItem);
         }
       } catch (err) {
-        console.error("Error cargando orden pública:", err);
+        console.error("Error cargando recepción pública:", err);
         setError("Ocurrió un error al cargar la información. Inténtalo de nuevo.");
       }
       setLoading(false);
     };
     load();
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [orderId]);
 
   const respond = async (status: "aprobado" | "rechazado") => {
-    if (!repair || responding || repair.approvalStatus === "aprobado" || repair.approvalStatus === "rechazado") return;
+    if (!repair || responding || repair.clientEntryApproval === "aprobado" || repair.clientEntryApproval === "rechazado") return;
     setResponding(true);
     try {
       await updateDoc(doc(db, "repairs", orderId), {
-        approvalStatus: status,
-        approvalResponseAt: new Date().toISOString()
+        clientEntryApproval: status,
+        clientEntryResponseAt: new Date().toISOString()
       });
       setRepair((r) =>
-        r
-          ? { ...r, approvalStatus: status, approvalResponseAt: new Date().toISOString() }
-          : r
+        r ? { ...r, clientEntryApproval: status, clientEntryResponseAt: new Date().toISOString() } : r
       );
     } catch (err) {
       console.error("Error guardando respuesta del cliente:", err);
@@ -141,14 +126,8 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
     );
   }
 
-  const status = repair.approvalStatus;
+  const status = repair.clientEntryApproval;
   const responded = status === "aprobado" || status === "rechazado";
-  const total = (repair.spareParts || []).reduce(
-    (s, p) => s + (Number(p.partPrice) || 0) + (Number(p.laborPrice) || 0),
-    0
-  );
-  const advance = repair.payment?.advancePayment || 0;
-  const balance = Math.max(0, total - advance);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
@@ -156,12 +135,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
       <header className="bg-slate-900 border-b border-slate-800 px-5 py-4 flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <div className="flex items-center justify-center overflow-hidden drop-shadow-[0_0_12px_rgba(6,182,212,0.4)] shrink-0">
-            <img
-              src={litioLogo}
-              alt="Isotipo Litio Energy"
-              className="w-16 h-16 object-contain"
-              draggable={false}
-            />
+            <img src={litioLogo} alt="Isotipo Litio Energy" className="w-16 h-16 object-contain" draggable={false} />
           </div>
           <div>
             <h1 className="text-lg font-black tracking-tight text-white">
@@ -184,7 +158,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
             Hola <span className="text-cyan-400">{repair.client.name.split(" ")[0]}</span> 👋
           </h2>
           <p className="text-sm text-slate-400 mt-1">
-            Aquí tienes toda la información de tu vehículo y el presupuesto de tu reparación.
+            Tu vehículo ha sido ingresado a nuestro taller. A continuación encontrarás el resumen y podrás confirmar tu conformidad.
           </p>
         </div>
 
@@ -281,104 +255,25 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
           </section>
         )}
 
-        {/* Repuestos / trabajos */}
-        {(repair.spareParts || []).length > 0 && (
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-            <h3 className="text-[10px] font-black uppercase tracking-wider text-amber-400 mb-3">
-              Repuestos / Trabajos a realizar
-            </h3>
-            <div className="space-y-2">
-              {(repair.spareParts || []).map((p) => (
-                <div key={p.id} className="flex items-center justify-between gap-2 text-sm">
-                  <div className="min-w-0">
-                    <p className="text-slate-200 font-medium truncate">{p.description}</p>
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-black uppercase ${
-                      p.type === "cambio"
-                        ? "bg-amber-500/15 text-amber-400 border-amber-500/25"
-                        : "bg-blue-500/15 text-blue-400 border-blue-500/25"
-                    }`}>
-                      {p.type === "cambio" ? "Cambiar" : "Reparar"}
-                    </span>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-slate-100 font-bold">{fmt(p.partPrice)}</p>
-                    <p className="text-[10px] text-slate-500">M.O. {fmt(p.laborPrice)}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Observaciones */}
-        {(repair.visualState.notes || repair.technicianNotes) && (
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-            <h3 className="text-[10px] font-black uppercase tracking-wider text-amber-400 mb-3">
-              Observaciones y estado del vehículo
-            </h3>
-            {repair.visualState.notes && (
-              <div className="mb-3">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Estado de ingreso</p>
-                <p className="text-sm text-slate-300">{repair.visualState.notes}</p>
-              </div>
-            )}
-            {repair.technicianNotes && repair.technicianNotes !== "Vehículo recién ingresado por recepción." && (
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Notas del técnico</p>
-                <p className="text-sm text-slate-300">{repair.technicianNotes}</p>
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* Total */}
-        <section className="bg-slate-900 border border-amber-500/30 rounded-2xl p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Total presupuesto</p>
-              <p className="text-2xl font-black text-amber-400">{fmt(total)}</p>
-            </div>
-            <div className="text-right">
-              <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Adelanto</p>
-              <p className="text-sm font-black text-emerald-400">{fmt(advance)}</p>
-              <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mt-1">Saldo</p>
-              <p className="text-sm font-black text-rose-400">{fmt(balance)}</p>
-            </div>
-          </div>
-          {repair.payment && (repair.payment.paymentNotes || repair.payment.paymentMethod) && (
-            <div className="mt-3 pt-3 border-t border-slate-800 text-sm text-slate-300 space-y-1">
-              {repair.payment.paymentMethod && (
-                <p className="flex items-center space-x-1.5">
-                  <CreditCard className="w-3.5 h-3.5 text-slate-500" />
-                  <span><span className="text-slate-500">Método de pago:</span> {methodLabels[repair.payment.paymentMethod] || repair.payment.paymentMethod}</span>
-                </p>
-              )}
-              {repair.payment.paymentNotes && (
-                <p className="text-sm text-slate-400 italic">"{repair.payment.paymentNotes}"</p>
-              )}
-            </div>
-          )}
-        </section>
-
-        {/* Fotos */}
+        {/* Fotos de evidencia */}
         {(repair.visualState.photos || []).length > 0 && (
           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
             <h3 className="text-[10px] font-black uppercase tracking-wider text-cyan-400 mb-3 flex items-center space-x-1.5">
               <Camera className="w-3.5 h-3.5" />
-              <span>Evidencia fotográfica ({repair.visualState.photos!.length})</span>
+              <span>Evidencia fotográfica de tu vehículo ({repair.visualState.photos!.length})</span>
             </h3>
             <div className="grid grid-cols-2 gap-2">
               {(repair.visualState.photos || []).map((photo, idx) => (
                 <a key={idx} href={photo} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
                   <img src={photo} alt={`Evidencia ${idx + 1}`} className="w-full h-28 object-cover" loading="lazy" />
-                  <p className="text-[9px] text-slate-500 font-mono text-center py-1">Evidencia #{idx + 1}</p>
+                  <p className="text-[9px] text-slate-500 font-mono text-center py-1">Foto #{idx + 1}</p>
                 </a>
               ))}
             </div>
           </section>
         )}
 
-        {/* Videos */}
+        {/* Videos de evidencia */}
         {(repair.visualState.videoEvidence || []).length > 0 && (
           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
             <h3 className="text-[10px] font-black uppercase tracking-wider text-cyan-400 mb-3 flex items-center space-x-1.5">
@@ -392,7 +287,6 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
                   <p className="text-[9px] text-slate-500 font-mono text-center py-1">
                     Video #{idx + 1}
                     {v.recordedAt ? ` · ${new Date(v.recordedAt).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })}` : ""}
-                    {v.recordedBy ? ` · ${v.recordedBy}` : ""}
                   </p>
                 </div>
               ))}
@@ -400,28 +294,26 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
           </section>
         )}
 
-        {/* Condiciones de Garantía */}
-        {!responded && (
-          <section className="bg-slate-900 border border-cyan-500/30 rounded-2xl p-4">
-            <h3 className="text-[10px] font-black uppercase tracking-wider text-cyan-400 mb-2 flex items-center space-x-1.5">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Condiciones de Garantía</span>
-            </h3>
-            <p className="text-xs text-slate-400 mb-3">
-              Antes de aprobar tu presupuesto, te recomendamos revisar nuestras Condiciones de Garantía.
-            </p>
-            <a
-              href={`${window.location.origin}${window.location.pathname.replace(/\/app\/.+$/, "")}garantia`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center space-x-2 w-full py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition-all"
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Consultar Condiciones de Garantía</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
-          </section>
-        )}
+        {/* Link a Términos y Condiciones */}
+        <section className="bg-slate-900 border border-cyan-500/30 rounded-2xl p-4">
+          <h3 className="text-[10px] font-black uppercase tracking-wider text-cyan-400 mb-2 flex items-center space-x-1.5">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>Términos y Condiciones</span>
+          </h3>
+          <p className="text-xs text-slate-400 mb-3">
+            Antes de confirmar el ingreso, te recomendamos revisar nuestros Términos y Condiciones del servicio.
+          </p>
+          <a
+            href={`${window.location.origin}${window.location.pathname.replace(/recepcion\/.+$/, '')}terminos`}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center space-x-1.5 px-4 py-2 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/40 text-cyan-400 rounded-xl text-xs font-bold transition-all"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>Consultar Términos y Condiciones</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
+        </section>
 
         {/* Estado de respuesta / Botones */}
         {responded ? (
@@ -436,23 +328,23 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
               <XCircle className="w-12 h-12 text-rose-400 mx-auto mb-2" />
             )}
             <p className="font-black text-white text-lg">
-              {status === "aprobado" ? "¡Presupuesto aprobado!" : "Presupuesto rechazado"}
+              {status === "aprobado" ? "¡Ingreso confirmado!" : "Ingreso no confirmado"}
             </p>
             <p className="text-sm text-slate-300 mt-1">
               {status === "aprobado"
-                ? "Gracias por tu confirmación. Nuestro taller ya fue notificado y comenzará con tu reparación."
+                ? "Gracias por confirmar. Nuestro taller ya fue notificado y continuará con el proceso."
                 : "Gracias por avisarnos. Nuestro taller se comunicará contigo para resolver cualquier duda."}
             </p>
             <p className="text-xs text-slate-500 mt-3">
-              Respondiste el {repair.approvalResponseAt
-                ? new Date(repair.approvalResponseAt).toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" })
+              Respondiste el {repair.clientEntryResponseAt
+                ? new Date(repair.clientEntryResponseAt).toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" })
                 : ""}
             </p>
           </section>
         ) : (
           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-center">
-            <p className="text-sm font-bold text-white mb-1">¿Apruebas tu presupuesto?</p>
-            <p className="text-xs text-slate-400 mb-4">Tu respuesta llega directamente a la jefa de nuestro taller.</p>
+            <p className="text-sm font-bold text-white mb-1">¿Confirmas el ingreso de tu vehículo?</p>
+            <p className="text-xs text-slate-400 mb-4">Tu respuesta llega directamente a la recepción de nuestro taller.</p>
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
@@ -461,7 +353,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
                 className="flex flex-col items-center gap-1.5 py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-emerald-950 font-black text-sm transition-all shadow-[0_0_20px_rgba(16,185,129,0.25)]"
               >
                 <CheckCircle2 className="w-7 h-7" />
-                APROBAR
+                SÍ, ACEPTO
               </button>
               <button
                 type="button"
@@ -470,7 +362,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
                 className="flex flex-col items-center gap-1.5 py-4 rounded-2xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black text-sm transition-all"
               >
                 <XCircle className="w-7 h-7" />
-                RECHAZAR
+                NO
               </button>
             </div>
             {responding && (
