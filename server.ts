@@ -830,7 +830,7 @@ app.post("/api/repairs", (req, res) => {
     visualState: newRepair.visualState,
     status: "receptioned",
     aiDiagnostic: newRepair.aiDiagnostic || null,
-    technicianNotes: "Vehículo recién ingresado por recepción.",
+    technicianNotes: "",
     estimatedCost: Number(newRepair.estimatedCost) || 0,
     actualCost: 0,
     clientSignature: newRepair.clientSignature || "",

@@ -34,7 +34,7 @@ export interface UserEntry {
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   admin: "Administrador",
-  jefa: "Jefa de Local",
+  jefa: "Asesora de Servicio",
   tecnico: "Técnico"
 };
 
@@ -45,9 +45,9 @@ export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
 };
 
 export const ROLE_TABS: Record<UserRole, string[]> = {
-  admin: ["reception", "technician", "presupuesto", "calidad", "express", "chat", "clientes", "dashboard", "accesos"],
-  jefa: ["reception", "technician", "presupuesto", "calidad", "express", "chat", "clientes"],
-  tecnico: ["technician"]
+  admin: ["admin-dashboard", "accesos"],
+  jefa: ["reception", "derivar", "presupuesto", "control", "calidad", "express", "clientes", "tiempos"],
+  tecnico: ["technician", "repair"]
 };
 
 export const LOCALES: { key: string; name: string }[] = [

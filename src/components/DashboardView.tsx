@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   BarChart3, 
   TrendingUp, 
@@ -13,7 +13,9 @@ import {
   Printer,
   Search,
   FileText,
-  Calendar
+  Calendar,
+  Clock,
+  AlertTriangle
 } from "lucide-react";
 import { RepairItem, WorkshopStats } from "../types";
 import { generateRepairPdf } from "../utils/pdfGenerator";
@@ -24,9 +26,15 @@ interface DashboardViewProps {
 }
 
 export default function DashboardView({ repairs, stats }: DashboardViewProps) {
-  // Delivered history state
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
+
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const branchLabels: Record<string, string> = {
     lince_arenales: "Arenales (San Isidro)",
@@ -94,6 +102,36 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
     }))
   ).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+  const scheduledRepairs = repairs
+    .filter(r => r.scheduledDeadline && r.status !== "delivered")
+    .sort((a, b) => new Date(a.scheduledDeadline!).getTime() - new Date(b.scheduledDeadline!).getTime());
+
+  const fmt = (ms: number) => {
+    const absMs = Math.abs(ms);
+    const d = Math.floor(absMs / (1000 * 60 * 60 * 24));
+    const h = Math.floor((absMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const m = Math.floor((absMs % (1000 * 60 * 60)) / (1000 * 60));
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    return `${h}h ${m}m`;
+  };
+
+  const getUrgency = (deadlineMs: number) => {
+    const remaining = deadlineMs - now;
+    const isOverdue = remaining < 0;
+    const hoursLeft = Math.abs(remaining) / (1000 * 60 * 60);
+    if (isOverdue) return { color: "text-red-400", bar: "bg-red-500", badge: "bg-red-500/10 border-red-500/25", label: `Vencido hace ${fmt(remaining)}` };
+    if (hoursLeft < 2) return { color: "text-amber-400", bar: "bg-amber-500", badge: "bg-amber-500/10 border-amber-500/25", label: `${fmt(remaining)} restantes` };
+    if (hoursLeft < 4) return { color: "text-orange-400", bar: "bg-orange-500", badge: "bg-orange-500/10 border-orange-500/25", label: `${fmt(remaining)} restantes` };
+    return { color: "text-emerald-400", bar: "bg-emerald-500", badge: "bg-emerald-500/10 border-emerald-500/25", label: `${fmt(remaining)} restantes` };
+  };
+
+  const serviceLabels: Record<string, string> = {
+    mantenimiento: "Mantenimiento",
+    diagnostico: "Diagnóstico",
+    garantia: "Garantía",
+    cambio: "Cambio"
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 space-y-6">
       
@@ -129,7 +167,7 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
           <div className="space-y-1">
             <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">En Reparación Activa</span>
             <p className="text-2xl font-bold font-mono text-slate-100">
-              {stats.diagnosing + stats.repairing + stats.waiting_parts + stats.testing}
+              {stats.diagnosing + stats.repairing + stats.testing}
             </p>
             <p className="text-[10px] text-purple-400 font-medium">En banco de mecánicos</p>
           </div>
@@ -138,12 +176,12 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
           </div>
         </div>
 
-        {/* Metrica 3: Espera de repuestos */}
+        {/* Metrica 3: En Diagnóstico */}
         <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl flex items-center justify-between">
           <div className="space-y-1">
-            <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Espera de Repuestos</span>
-            <p className="text-2xl font-bold font-mono text-slate-100">{stats.waiting_parts}</p>
-            <p className="text-[10px] text-amber-400 font-medium">Pendientes de proveedor</p>
+            <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">En Diagnóstico</span>
+            <p className="text-2xl font-bold font-mono text-slate-100">{stats.diagnosing}</p>
+            <p className="text-[10px] text-purple-400 font-medium">Evaluación de falla</p>
           </div>
           <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-400">
             <Activity className="w-6 h-6" />
@@ -163,6 +201,62 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
         </div>
 
       </div>
+
+      {/* SECCIÓN: VEHÍCULOS CON TIEMPO PROGRAMADO */}
+      {scheduledRepairs.length > 0 && (
+        <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl space-y-4 text-white">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 className="font-display font-bold text-sm text-slate-100 uppercase tracking-wider flex items-center gap-2">
+              <Clock className="w-4 h-4 text-cyan-400" />
+              Tiempos Programados de Servicio
+            </h3>
+            {scheduledRepairs.some(r => r.scheduledDeadline && new Date(r.scheduledDeadline).getTime() < now) && (
+              <span className="text-xs bg-red-500/10 text-red-400 px-2.5 py-0.5 rounded-full font-mono border border-red-500/25 flex items-center gap-1.5">
+                <AlertTriangle className="w-3 h-3" />
+                {scheduledRepairs.filter(r => r.scheduledDeadline && new Date(r.scheduledDeadline).getTime() < now).length} vencidos
+              </span>
+            )}
+          </div>
+
+          <div className="space-y-3 max-h-[290px] overflow-y-auto pr-1">
+            {scheduledRepairs.map(r => {
+              const deadline = new Date(r.scheduledDeadline!).getTime();
+              const startMs = new Date(r.serviceStartedAt || r.receptionDate).getTime();
+              const elapsed = now - startMs;
+              const totalMs = deadline - startMs;
+              const progress = totalMs > 0 ? Math.min(100, Math.max(0, (elapsed / totalMs) * 100)) : 100;
+              const urgency = getUrgency(deadline);
+              const isOverdue = deadline < now;
+
+              return (
+                <div key={r.id} className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${isOverdue ? "bg-red-950/20 border-red-500/20" : "bg-slate-950 border-slate-800/80 hover:bg-slate-900"}`}>
+                  <div className="space-y-1.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono font-bold text-xs text-cyan-400">{r.id}</span>
+                      <span className="text-slate-700">|</span>
+                      <span className="font-bold text-xs text-slate-200 truncate">{r.client.name}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      {r.vehicle.brand} {r.vehicle.model} &middot; {serviceLabels[r.serviceType] || r.serviceType}
+                    </p>
+                    <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden border border-slate-800">
+                      <div className={`${urgency.bar} h-full rounded-full transition-all duration-1000`} style={{ width: `${progress}%` }}></div>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 space-y-1">
+                    <span className={`inline-block px-2 py-0.5 rounded-full border text-[9px] font-bold ${urgency.badge} ${urgency.color}`}>
+                      {urgency.label}
+                    </span>
+                    <p className="text-[9px] text-slate-500 font-mono block">
+                      Límite: {new Date(deadline).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
 
       {/* DISTRIBUCIÓN DE VEHÍCULOS & ACTIVIDAD RECIENTE */}
@@ -244,7 +338,8 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
                 const badgeStyles: Record<string, string> = {
                   receptioned: "bg-cyan-500/10 text-cyan-400 border-cyan-500/25",
                   diagnosing: "bg-purple-500/10 text-purple-400 border-purple-500/25",
-                  waiting_parts: "bg-amber-500/10 text-amber-400 border-amber-500/25",
+                  quoted: "bg-amber-500/10 text-amber-400 border-amber-500/25",
+                  paid: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
                   repairing: "bg-blue-500/10 text-blue-400 border-blue-500/25",
                   testing: "bg-pink-500/10 text-pink-400 border-pink-500/25",
                   ready: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
@@ -392,10 +487,10 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
                       type="button"
                       onClick={() => generateRepairPdf(item)}
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-950/40 hover:bg-cyan-900/40 text-cyan-400 hover:text-cyan-300 rounded-xl border border-cyan-900/60 hover:border-cyan-500/50 transition-all font-bold font-mono text-xs cursor-pointer shadow-sm shadow-cyan-950/30"
-                      title="Imprimir Certificado de Conformidad PDF"
+                      title="Imprimir Ficha de Conformidad"
                     >
                       <Printer className="w-3.5 h-3.5" />
-                      <span>Ver Ficha PDF</span>
+                      <span>Imprimir Ficha</span>
                     </button>
                   </div>
                 </div>

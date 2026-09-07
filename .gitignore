@@ -14,3 +14,23 @@ lifecycle.json
 backup_evidencias.bat
 README.md
 informe mantenimiento.png
+functions/service-account.json
+check_data.mjs
+fix_*.mjs
+
+# scripts/tools temporales de depuración (no forman parte de la app)
+_cleanclients.cjs
+_tmp_getconfig.cjs
+check-dni.mjs
+inspect.mjs
+check-detail.cjs
+check-repairs-web.cjs
+check-repairs.cjs
+clear-notes.cjs
+fix-ls00001.cjs
+
+# node_modules de functions
+functions/node_modules/
+functions/lib/
+functions/.env
+functions/package-lock.json

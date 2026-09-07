@@ -13,12 +13,14 @@ import {
   FileText,
   Loader2,
   MapPin,
+  Maximize2,
   Package,
   Phone,
   ShieldCheck,
   User,
   Video,
   Wrench,
+  X,
   XCircle,
   Zap
 } from "lucide-react";
@@ -41,6 +43,13 @@ const branchNames: Record<string, string> = {
   surco: "Surco",
   san_borja: "San Borja",
   lince_leal: "Lince (José Leal)"
+};
+
+const sentFromLabels: Record<string, string> = {
+  lince_arenales: "Enviado desde SAN ISIDRO (ARENALES)",
+  surco: "Enviado desde SURCO",
+  san_borja: "Enviado desde SAN BORJA",
+  lince_leal: "Enviado desde LINCE (JOSÉ LEAL)"
 };
 
 const serviceLabels: Record<string, string> = {
@@ -66,6 +75,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [responding, setResponding] = useState(false);
+  const [preview, setPreview] = useState<{ type: "photo" | "video"; url: string; label?: string } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -101,7 +111,8 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
     try {
       await updateDoc(doc(db, "repairs", orderId), {
         approvalStatus: status,
-        approvalResponseAt: new Date().toISOString()
+        approvalResponseAt: new Date().toISOString(),
+        ...(status === "aprobado" ? { status: "paid" } : {})
       });
       setRepair((r) =>
         r
@@ -173,7 +184,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
           </div>
         </div>
         <span className="text-[11px] font-mono px-2.5 py-1 rounded-full bg-slate-950 border border-slate-700 text-cyan-400">
-          Orden LE-{orderId.slice(0, 8).toUpperCase()}
+          Orden {orderId.toUpperCase()}
         </span>
       </header>
 
@@ -215,7 +226,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
               {repair.serviceTypeDetail ? ` (${repair.serviceTypeDetail})` : ""}
             </p>
             <p className="text-slate-200">
-              <span className="text-slate-500">Orden:</span> LE-{repair.id.slice(0, 8).toUpperCase()}
+              <span className="text-slate-500">Orden:</span> {repair.id.toUpperCase()}
             </p>
           </div>
         </section>
@@ -281,32 +292,11 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
           </section>
         )}
 
-        {/* Repuestos / trabajos */}
-        {(repair.spareParts || []).length > 0 && (
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-            <h3 className="text-[10px] font-black uppercase tracking-wider text-amber-400 mb-3">
-              Repuestos / Trabajos a realizar
-            </h3>
-            <div className="space-y-2">
-              {(repair.spareParts || []).map((p) => (
-                <div key={p.id} className="flex items-center justify-between gap-2 text-sm">
-                  <div className="min-w-0">
-                    <p className="text-slate-200 font-medium truncate">{p.description}</p>
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-black uppercase ${
-                      p.type === "cambio"
-                        ? "bg-amber-500/15 text-amber-400 border-amber-500/25"
-                        : "bg-blue-500/15 text-blue-400 border-blue-500/25"
-                    }`}>
-                      {p.type === "cambio" ? "Cambiar" : "Reparar"}
-                    </span>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-slate-100 font-bold">{fmt(p.partPrice)}</p>
-                    <p className="text-[10px] text-slate-500">M.O. {fmt(p.laborPrice)}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
+        {/* Recomendaciones del técnico */}
+        {repair.recommendations && (
+          <section className="bg-amber-950/30 border border-amber-700/40 rounded-2xl p-4">
+            <h3 className="text-[10px] font-black uppercase tracking-wider text-amber-400 mb-1">Recomendaciones del técnico</h3>
+            <p className="text-sm text-amber-100">{repair.recommendations}</p>
           </section>
         )}
 
@@ -328,6 +318,35 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
                 <p className="text-sm text-slate-300">{repair.technicianNotes}</p>
               </div>
             )}
+          </section>
+        )}
+
+        {/* Repuestos / trabajos */}
+        {(repair.spareParts || []).length > 0 && (
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+            <h3 className="text-[10px] font-black uppercase tracking-wider text-amber-400 mb-3">
+              Repuestos / Trabajos a realizar
+            </h3>
+            <div className="space-y-2">
+              {(repair.spareParts || []).map((p) => (
+                <div key={p.id} className="flex items-center justify-between gap-2 text-sm">
+                  <div className="min-w-0">
+                    <p className="text-slate-200 font-medium truncate">{p.description}</p>
+                    <span className={`text-sm px-1.5 py-0.5 rounded-full border font-semibold ${
+                      p.type === "cambio"
+                        ? "bg-amber-500/15 text-amber-400 border-amber-500/25"
+                        : "bg-blue-500/15 text-blue-400 border-blue-500/25"
+                    }`}>
+                      {p.type === "cambio" ? "Mano de Obra" : "Reparar"}
+                    </span>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-slate-100 font-bold">{fmt(p.partPrice)}</p>
+                    <p className="text-sm text-slate-100">{fmt(p.laborPrice)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
           </section>
         )}
 
@@ -369,10 +388,15 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
             </h3>
             <div className="grid grid-cols-2 gap-2">
               {(repair.visualState.photos || []).map((photo, idx) => (
-                <a key={idx} href={photo} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => setPreview({ type: "photo", url: photo, label: `Evidencia ${idx + 1}` })}
+                  className="block rounded-xl overflow-hidden border border-slate-800 bg-slate-950 cursor-zoom-in text-left"
+                >
                   <img src={photo} alt={`Evidencia ${idx + 1}`} className="w-full h-28 object-cover" loading="lazy" />
                   <p className="text-[9px] text-slate-500 font-mono text-center py-1">Evidencia #{idx + 1}</p>
-                </a>
+                </button>
               ))}
             </div>
           </section>
@@ -388,12 +412,25 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
             <div className="space-y-2">
               {(repair.visualState.videoEvidence || []).map((v, idx) => (
                 <div key={idx} className="rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
-                  <video src={v.url} controls className="w-full aspect-video bg-black" />
-                  <p className="text-[9px] text-slate-500 font-mono text-center py-1">
-                    Video #{idx + 1}
-                    {v.recordedAt ? ` · ${new Date(v.recordedAt).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })}` : ""}
-                    {v.recordedBy ? ` · ${v.recordedBy}` : ""}
-                  </p>
+                  <div className="relative">
+                    <video src={v.url} controls className="w-full aspect-video bg-black" />
+                    <button
+                      type="button"
+                      onClick={() => setPreview({ type: "video", url: v.url, label: `Video ${idx + 1}` })}
+                      className="absolute top-2 right-2 flex items-center space-x-1 px-2 py-1.5 rounded-lg bg-slate-950/85 hover:bg-slate-900 border border-slate-700 text-slate-200 font-bold text-[10px] uppercase tracking-wider transition-colors"
+                      aria-label="Ampliar video"
+                    >
+                      <Maximize2 className="w-3 h-3" />
+                      <span>Ampliar</span>
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between px-3 py-1">
+                    <p className="text-[9px] text-slate-500 font-mono">
+                      Video #{idx + 1}
+                      {v.recordedAt ? ` · ${new Date(v.recordedAt).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })}` : ""}
+                      {v.recordedBy ? ` · ${v.recordedBy}` : ""}
+                    </p>
+                  </div>
                 </div>
               ))}
             </div>
@@ -401,7 +438,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
         )}
 
         {/* Condiciones de Garantía */}
-        {!responded && (
+        {(
           <section className="bg-slate-900 border border-cyan-500/30 rounded-2xl p-4">
             <h3 className="text-[10px] font-black uppercase tracking-wider text-cyan-400 mb-2 flex items-center space-x-1.5">
               <ShieldCheck className="w-3.5 h-3.5" />
@@ -419,9 +456,9 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
               <ShieldCheck className="w-4 h-4" />
               <span>Consultar Condiciones de Garantía</span>
               <ExternalLink className="w-3 h-3" />
-            </a>
-          </section>
-        )}
+              </a>
+            </section>
+          )}
 
         {/* Estado de respuesta / Botones */}
         {responded ? (
@@ -440,7 +477,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
             </p>
             <p className="text-sm text-slate-300 mt-1">
               {status === "aprobado"
-                ? "Gracias por tu confirmación. Nuestro taller ya fue notificado y comenzará con tu reparación."
+                ? "Gracias por tu confirmación. Nuestro taller ya fue notificado y te asignaremos un técnico para comenzar tu reparación."
                 : "Gracias por avisarnos. Nuestro taller se comunicará contigo para resolver cualquier duda."}
             </p>
             <p className="text-xs text-slate-500 mt-3">
@@ -452,7 +489,7 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
         ) : (
           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-center">
             <p className="text-sm font-bold text-white mb-1">¿Apruebas tu presupuesto?</p>
-            <p className="text-xs text-slate-400 mb-4">Tu respuesta llega directamente a la jefa de nuestro taller.</p>
+            <p className="text-xs text-slate-400 mb-4">Tu respuesta llega directamente a la asesora de nuestro taller.</p>
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
@@ -488,9 +525,47 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
             <ShieldCheck className="w-3.5 h-3.5" />
             <span>Documento generado por el Sistema Litio Energy</span>
           </p>
-          <p>AV. ARENALES 1450, LINCE — SAN BORJA — SURCO — LIMA, PERÚ</p>
+          <p>{(sentFromLabels[repair.workshopBranch] || "ENVIADO DESDE LITIO ENERGY") + " — LIMA, PERÚ"}</p>
         </footer>
       </main>
+
+      {/* Visor de evidencia ampliada (fotos y videos) */}
+      {preview && (
+        <div
+          className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4"
+          onClick={() => setPreview(null)}
+        >
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setPreview(null); }}
+            className="absolute top-4 right-4 p-2.5 rounded-full bg-slate-800 text-slate-200 hover:bg-slate-700 transition-colors"
+            aria-label="Cerrar"
+          >
+            <X className="w-5 h-5" />
+          </button>
+
+          {preview.type === "photo" ? (
+            <img
+              src={preview.url}
+              alt={preview.label || "Evidencia"}
+              className="max-h-[92vh] max-w-full object-contain rounded-xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <video
+              src={preview.url}
+              controls
+              autoPlay
+              className="max-h-[92vh] w-full max-w-5xl object-contain rounded-xl bg-black"
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
+
+          {preview.label && (
+            <p className="absolute bottom-6 left-0 right-0 text-center text-xs text-slate-300 font-mono">{preview.label}</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

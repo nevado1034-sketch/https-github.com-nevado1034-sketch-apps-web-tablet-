@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { db, doc, getDoc, updateDoc } from "../firebase";
+import { db, doc, getDoc } from "../firebase";
 import { RepairItem } from "../types";
 import litioLogo from "../assets/litio-logo.png";
 import {
   Battery,
   Calendar,
   Camera,
-  CheckCircle2,
   ClipboardList,
   FileText,
   Loader2,
@@ -17,7 +16,6 @@ import {
   User,
   Video,
   Wrench,
-  XCircle,
   Zap,
   ExternalLink
 } from "lucide-react";
@@ -28,11 +26,6 @@ interface RecepcionPublicaProps {
 
 const typeLabels: Record<string, string> = {
   scooter: "Scooter Eléctrico",
-  bici: "Bicicleta Eléctrica",
-  moto: "Moto Eléctrica",
-  bicimoto: "Bicimoto Eléctrica",
-  trimoto: "Trimoto / Moto-Taxi Eléctrico",
-  otro: "Vehículo Eléctrico Especial"
 };
 
 const branchNames: Record<string, string> = {
@@ -40,6 +33,13 @@ const branchNames: Record<string, string> = {
   surco: "Surco",
   san_borja: "San Borja",
   lince_leal: "Lince (José Leal)"
+};
+
+const sentFromLabels: Record<string, string> = {
+  lince_arenales: "Enviado desde SAN ISIDRO (ARENALES)",
+  surco: "Enviado desde SURCO",
+  san_borja: "Enviado desde SAN BORJA",
+  lince_leal: "Enviado desde LINCE (JOSÉ LEAL)"
 };
 
 const serviceLabels: Record<string, string> = {
@@ -54,7 +54,7 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
   const [repair, setRepair] = useState<RepairItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [responding, setResponding] = useState(false);
+  const [photoLightbox, setPhotoLightbox] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -82,24 +82,6 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
     return () => { active = false; };
   }, [orderId]);
 
-  const respond = async (status: "aprobado" | "rechazado") => {
-    if (!repair || responding || repair.clientEntryApproval === "aprobado" || repair.clientEntryApproval === "rechazado") return;
-    setResponding(true);
-    try {
-      await updateDoc(doc(db, "repairs", orderId), {
-        clientEntryApproval: status,
-        clientEntryResponseAt: new Date().toISOString()
-      });
-      setRepair((r) =>
-        r ? { ...r, clientEntryApproval: status, clientEntryResponseAt: new Date().toISOString() } : r
-      );
-    } catch (err) {
-      console.error("Error guardando respuesta del cliente:", err);
-      setError("No se pudo registrar tu respuesta. Revisa tu conexión e inténtalo de nuevo.");
-    }
-    setResponding(false);
-  };
-
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center gap-3 px-6">
@@ -126,9 +108,6 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
     );
   }
 
-  const status = repair.clientEntryApproval;
-  const responded = status === "aprobado" || status === "rechazado";
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
       {/* Barra superior */}
@@ -147,7 +126,7 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
           </div>
         </div>
         <span className="text-[11px] font-mono px-2.5 py-1 rounded-full bg-slate-950 border border-slate-700 text-cyan-400">
-          Orden LE-{orderId.slice(0, 8).toUpperCase()}
+          Orden {orderId.toUpperCase()}
         </span>
       </header>
 
@@ -158,7 +137,7 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
             Hola <span className="text-cyan-400">{repair.client.name.split(" ")[0]}</span> 👋
           </h2>
           <p className="text-sm text-slate-400 mt-1">
-            Tu vehículo ha sido ingresado a nuestro taller. A continuación encontrarás el resumen y podrás confirmar tu conformidad.
+            Tu vehículo ha sido ingresado a nuestro taller. A continuación encontrarás el resumen de tu ingreso.
           </p>
         </div>
 
@@ -189,7 +168,7 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
               {repair.serviceTypeDetail ? ` (${repair.serviceTypeDetail})` : ""}
             </p>
             <p className="text-slate-200">
-              <span className="text-slate-500">Orden:</span> LE-{repair.id.slice(0, 8).toUpperCase()}
+              <span className="text-slate-500">Orden:</span> {repair.id.toUpperCase()}
             </p>
           </div>
         </section>
@@ -264,10 +243,15 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
             </h3>
             <div className="grid grid-cols-2 gap-2">
               {(repair.visualState.photos || []).map((photo, idx) => (
-                <a key={idx} href={photo} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
-                  <img src={photo} alt={`Evidencia ${idx + 1}`} className="w-full h-28 object-cover" loading="lazy" />
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => setPhotoLightbox(photo)}
+                  className="block w-full rounded-xl overflow-hidden border border-slate-800 bg-slate-950 cursor-pointer text-left group"
+                >
+                  <img src={photo} alt={`Evidencia ${idx + 1}`} className="w-full h-28 object-cover group-hover:opacity-80 transition-opacity" loading="lazy" />
                   <p className="text-[9px] text-slate-500 font-mono text-center py-1">Foto #{idx + 1}</p>
-                </a>
+                </button>
               ))}
             </div>
           </section>
@@ -301,7 +285,7 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
             <span>Términos y Condiciones</span>
           </h3>
           <p className="text-xs text-slate-400 mb-3">
-            Antes de confirmar el ingreso, te recomendamos revisar nuestros Términos y Condiciones del servicio.
+            Bienvenido a la familia LITIO ENERGY, te recomendamos revisar nuestros Términos y Condiciones del servicio.
           </p>
           <a
             href={`${window.location.origin}${window.location.pathname.replace(/recepcion\/.+$/, '')}terminos`}
@@ -315,74 +299,33 @@ export default function RecepcionPublica({ orderId }: RecepcionPublicaProps) {
           </a>
         </section>
 
-        {/* Estado de respuesta / Botones */}
-        {responded ? (
-          <section className={`rounded-2xl p-5 text-center border ${
-            status === "aprobado"
-              ? "bg-emerald-950/40 border-emerald-700/50"
-              : "bg-rose-950/40 border-rose-700/50"
-          }`}>
-            {status === "aprobado" ? (
-              <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto mb-2" />
-            ) : (
-              <XCircle className="w-12 h-12 text-rose-400 mx-auto mb-2" />
-            )}
-            <p className="font-black text-white text-lg">
-              {status === "aprobado" ? "¡Ingreso confirmado!" : "Ingreso no confirmado"}
-            </p>
-            <p className="text-sm text-slate-300 mt-1">
-              {status === "aprobado"
-                ? "Gracias por confirmar. Nuestro taller ya fue notificado y continuará con el proceso."
-                : "Gracias por avisarnos. Nuestro taller se comunicará contigo para resolver cualquier duda."}
-            </p>
-            <p className="text-xs text-slate-500 mt-3">
-              Respondiste el {repair.clientEntryResponseAt
-                ? new Date(repair.clientEntryResponseAt).toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" })
-                : ""}
-            </p>
-          </section>
-        ) : (
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-center">
-            <p className="text-sm font-bold text-white mb-1">¿Confirmas el ingreso de tu vehículo?</p>
-            <p className="text-xs text-slate-400 mb-4">Tu respuesta llega directamente a la recepción de nuestro taller.</p>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => respond("aprobado")}
-                disabled={responding}
-                className="flex flex-col items-center gap-1.5 py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-emerald-950 font-black text-sm transition-all shadow-[0_0_20px_rgba(16,185,129,0.25)]"
-              >
-                <CheckCircle2 className="w-7 h-7" />
-                SÍ, ACEPTO
-              </button>
-              <button
-                type="button"
-                onClick={() => respond("rechazado")}
-                disabled={responding}
-                className="flex flex-col items-center gap-1.5 py-4 rounded-2xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black text-sm transition-all"
-              >
-                <XCircle className="w-7 h-7" />
-                NO
-              </button>
-            </div>
-            {responding && (
-              <p className="flex items-center justify-center space-x-2 text-xs text-cyan-400 mt-3">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Enviando tu respuesta...</span>
-              </p>
-            )}
-          </section>
-        )}
-
         {/* Pie */}
         <footer className="text-center text-[10px] text-slate-600 pt-4 space-y-1">
           <p className="flex items-center justify-center space-x-1">
             <ShieldCheck className="w-3.5 h-3.5" />
             <span>Documento generado por el Sistema Litio Energy</span>
           </p>
-          <p>AV. ARENALES 1450, LINCE — SAN BORJA — SURCO — LIMA, PERÚ</p>
+          <p>{(sentFromLabels[repair.workshopBranch] || "ENVIADO DESDE LITIO ENERGY") + " — LIMA, PERÚ"}</p>
         </footer>
       </main>
+
+      {/* Lightbox de foto */}
+      {photoLightbox && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/95 p-4"
+          onClick={() => setPhotoLightbox(null)}
+        >
+          <div className="relative w-full max-w-4xl" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setPhotoLightbox(null)}
+              className="absolute -top-10 right-0 text-slate-400 hover:text-white text-sm font-bold px-3 py-1"
+            >
+              ✕ Cerrar
+            </button>
+            <img src={photoLightbox} alt="Evidencia" className="w-full max-h-[85vh] object-contain rounded-xl border border-slate-800 bg-black" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

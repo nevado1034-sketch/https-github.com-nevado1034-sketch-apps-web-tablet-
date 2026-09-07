@@ -1,14 +1,10 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Videos de respaldo (evidencia): solo la carpeta evidencias/
     match /evidencias/{allPaths=**} {
       allow read: if true;
-      allow write: if request.resource != null
-        && request.resource.size < 50 * 1024 * 1024
-        && request.resource.contentType.matches('video/.*');
+      allow write: if true;
     }
-    // Todo lo demas queda denegado
     match /{allPaths=**} {
       allow read, write: if false;
     }

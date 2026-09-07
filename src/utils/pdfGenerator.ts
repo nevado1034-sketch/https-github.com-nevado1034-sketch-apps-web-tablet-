@@ -31,7 +31,8 @@ export function buildRepairOrderHtml(repair: RepairItem): string {
   const statusLabels: Record<RepairStatus, string> = {
     receptioned: "Ingresado (En Cola)",
     diagnosing: "En Diagnóstico",
-    waiting_parts: "Esperando Repuestos",
+    quoted: "Presupuesto",
+    paid: "Pagado",
     repairing: "En Reparación",
     testing: "En Pruebas de Calidad",
     ready: "Listo para Entrega",
@@ -69,7 +70,7 @@ export function buildRepairOrderHtml(repair: RepairItem): string {
     </div>
   `;
 
-  const ticketNumber = `LE-${repair.id.slice(0, 8).toUpperCase()}`;
+  const ticketNumber = repair.id.toUpperCase();
   const formattedDate = new Date(repair.receptionDate).toLocaleString("es-PE", {
     year: "numeric",
     month: "long",
@@ -481,23 +482,55 @@ export function buildRepairOrderHtml(repair: RepairItem): string {
         .print-btn:hover {
           background-color: #0369a1;
         }
+
+        .download-btn {
+          position: fixed;
+          bottom: 20px;
+          left: 20px;
+          background-color: #16a34a;
+          color: #ffffff;
+          border: none;
+          padding: 12px 20px;
+          font-size: 12px;
+          font-weight: 700;
+          border-radius: 50px;
+          cursor: pointer;
+          box-shadow: 0 4px 12px rgba(22, 163, 74, 0.4);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          transition: background-color 0.2s;
+        }
+
+        .download-btn:hover {
+          background-color: #15803d;
+        }
       </style>
     </head>
     <body>
 
-      <!-- Floating Print Button (not printed) -->
-      <button class="print-btn no-print" onclick="window.print()">
-        🖨️ Imprimir / Guardar PDF
-      </button>
+      <!-- Floating Buttons (not printed) -->
+      <div class="no-print" style="position:fixed; bottom:20px; left:20px; right:20px; display:flex; justify-content:space-between; align-items:center; z-index:9999; pointer-events:none;">
+        <button class="download-btn" style="pointer-events:auto;" onclick="
+          const btn = this;
+          btn.textContent = '⏳ Preparando descarga...';
+          btn.disabled = true;
+          setTimeout(() => {
+            window.print();
+            btn.textContent = '📥 Descargar PDF';
+            btn.disabled = false;
+          }, 300);
+        ">
+          📥 Descargar PDF
+        </button>
+        <button class="print-btn" style="pointer-events:auto;" onclick="window.print()">
+          🖨️ Imprimir
+        </button>
+      </div>
 
       <!-- HEADER BAR -->
       <div class="header-bar">
         <div class="logo-container">
-          <img src="${logoUrl}" class="pdf-logo" alt="Logo Litio Energy" />
-          <div>
-            <h1>LITIO ENERGY</h1>
-            <p>Especialistas en Vehículos Eléctricos y Micromovilidad</p>
-          </div>
+          <img src="${logoUrl}" class="pdf-logo" alt="Litio Energy" />
         </div>
         <div class="document-title">
           <h2>CERTIFICADO DE CONFORMIDAD Y ORDEN DE SERVICIO</h2>
@@ -558,7 +591,7 @@ export function buildRepairOrderHtml(repair: RepairItem): string {
             <div class="info-val font-mono">${repair.vehicle.voltage}</div>
           </div>
           <div class="info-row">
-            <div class="info-label">Vida útil Batería:</div>
+            <div class="info-label">Tiempo de Uso de la Batería:</div>
             <div class="info-val uppercase font-mono text-[9px]">${repair.vehicle.batteryCondition}</div>
           </div>
           <div class="info-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1;">
@@ -647,9 +680,39 @@ export function buildRepairOrderHtml(repair: RepairItem): string {
       <div class="section-header">5. BITÁCORA TÉCNICA E INTERVENCIÓN DE TALLER</div>
       <div class="info-card" style="margin-bottom: 20px;">
         <div class="info-row">
+          <div class="info-label" style="width: 150px;">Técnico Responsable del Diagnóstico:</div>
+          <div class="info-val" style="font-weight: 700;">
+            ${(() => {
+              const clean = (n?: string) => (n || "").replace(/^Téc\.?\s*/i, "").trim();
+              const quotedLog = (repair.historyLog || []).find((l) => l.status === "quoted");
+              const diagFromLog = quotedLog ? clean(quotedLog.user) : "";
+              const diag = clean(repair.diagnosisTech) || diagFromLog || (repair.status === "diagnosing" ? clean(repair.assignedTech) : "");
+              return diag || "Por asignar";
+            })()}
+          </div>
+        </div>
+        <div class="info-row">
+          <div class="info-label" style="width: 150px;">Técnico Responsable de la Reparación:</div>
+          <div class="info-val" style="font-weight: 700;">
+            ${(() => {
+              const clean = (n?: string) => (n || "").replace(/^Téc\.?\s*/i, "").trim();
+              const pastDiagnosis = ["quoted", "paid", "repairing", "testing", "ready", "delivered"].includes(repair.status);
+              const rep = pastDiagnosis ? clean(repair.assignedTech) : "";
+              return rep || "Por asignar";
+            })()}
+          </div>
+        </div>
+        <div class="info-row">
           <div class="info-label" style="width: 150px;">Comentarios del Técnico / Trabajo Realizado:</div>
           <div class="info-val" style="font-family: monospace; line-height: 1.5; font-size: 10px; background: #ffffff; padding: 6px; border: 1px solid #cbd5e1; border-radius: 4px;">
-            ${repair.technicianNotes || "En proceso de diagnóstico por parte del mecánico de guardia."}
+            ${(() => {
+              const escTxt = (n?: string) => (n || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br/>");
+              const diag = escTxt(repair.technicianNotes);
+              const mesa = escTxt(repair.workshopNotes);
+              if (mesa && diag && mesa !== diag) return `<b>Diagnóstico:</b> ${diag}<br/><br/><b>Mesa de Trabajo:</b> ${mesa}`;
+              if (mesa) return mesa;
+              return (diag || "En proceso de diagnóstico por parte del mecánico de guardia.");
+            })()}
           </div>
         </div>
       </div>
@@ -875,4 +938,48 @@ export function generateRepairPdf(repair: RepairItem) {
 
   printWindow.document.write(buildRepairOrderHtml(repair));
   printWindow.document.close();
+}
+
+/**
+ * Download the repair order as a real PDF file (no print dialog).
+ * Uses html2pdf.js to render HTML → PDF blob → trigger download.
+ */
+export async function downloadRepairPdf(repair: RepairItem): Promise<void> {
+  const html2pdf = (await import("html2pdf.js")).default;
+
+  const ticketNumber = repair.id.toUpperCase();
+  const fileName = `LitioEnergy_${ticketNumber}.pdf`;
+
+  // Create a hidden container with the PDF content
+  const container = document.createElement("div");
+  container.style.position = "fixed";
+  container.style.left = "-9999px";
+  container.style.top = "0";
+  container.style.width = "800px";
+  container.style.background = "#fff";
+  container.innerHTML = buildRepairOrderHtml(repair);
+
+  // Remove no-print elements and buttons
+  container.querySelectorAll(".no-print").forEach((el) => el.remove());
+
+  document.body.appendChild(container);
+
+  try {
+    await html2pdf()
+      .set({
+        margin: 10,
+        filename: fileName,
+        image: { type: "jpeg", quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+        pagebreak: { mode: ["css", "legacy"] },
+      })
+      .from(container)
+      .save();
+  } catch (e) {
+    console.error("Error generating PDF:", e);
+    alert("Error al generar el PDF. Intenta imprimir y guardar como PDF.");
+  } finally {
+    document.body.removeChild(container);
+  }
 }

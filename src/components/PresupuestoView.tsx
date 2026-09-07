@@ -12,15 +12,20 @@ import {
   FileText,
   Save,
   CreditCard,
-  MessageCircle
+  MessageCircle,
+  Plus,
+  Trash2,
+  Menu
 } from "lucide-react";
 import { RepairItem, SparePart, PaymentMethod } from "../types";
+import { AuthConfig, loadConfig } from "../auth";
 
 interface PresupuestoViewProps {
   repairs: RepairItem[];
   onUpdateRepair: (id: string, updateData: any) => Promise<void>;
   userLocalKey?: string;
   userName?: string;
+  siteConfig?: AuthConfig | null;
 }
 
 const typeLabels: Record<string, string> = {
@@ -42,7 +47,8 @@ const branchNames: Record<string, string> = {
 const statusLabels: Record<string, string> = {
   receptioned: "Recibido",
   diagnosing: "En Diagnóstico",
-  waiting_parts: "Esperando Repuestos",
+  quoted: "Presupuesto",
+  paid: "Presupuesto",
   repairing: "En Reparación",
   testing: "En Pruebas",
   ready: "Listo para Entrega",
@@ -54,11 +60,45 @@ const fmt = (n?: number): string => {
   return `S/ ${n.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
-export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey, userName }: PresupuestoViewProps) {
+const norm = (s?: string) => (s || "").trim().toLowerCase();
+
+export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey, userName, siteConfig }: PresupuestoViewProps) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(null);
   const [prices, setPrices] = useState<Record<string, { partPrice: string; laborPrice: string }>>({});
+
+  // Asignación del técnico responsable de reparación (presupuesto aprobado)
+  const [assignMenuId, setAssignMenuId] = useState<string | null>(null);
+  const [assigningId, setAssigningId] = useState<string | null>(null);
+
+  const config = siteConfig || loadConfig();
+  const local = config?.locales?.find((l) => l.key === userLocalKey);
+  const tecnicos = local ? local.tecnicos.map((t) => t.name.trim()).filter(Boolean) : [];
+
+  const assignTech = async (r: RepairItem, matched: string) => {
+    setAssignMenuId(null);
+    setAssigningId(r.id);
+    try {
+      await onUpdateRepair(r.id, {
+        assignedTech: matched,
+        technicianName: "Téc. " + matched,
+        assignedByName: userName || "Asesora de Servicio",
+        status: "repairing"
+      });
+      alert(`Asignado a ${matched}. El vehículo pasó a su mesa de Reparación.`);
+    } catch (err) {
+      console.error(err);
+      alert("Error al asignar el técnico.");
+    } finally {
+      setAssigningId(null);
+    }
+  };
+
+  // Agregar repuesto/servicio desde presupuesto
+  const [newPartDesc, setNewPartDesc] = useState("");
+  const [newPartType, setNewPartType] = useState<"cambio" | "reparacion">("cambio");
+  const [newPartSource, setNewPartSource] = useState<"tecnico" | "cliente">("cliente");
 
   // Pago del presupuesto (adelanto, método y observaciones) que define la jefa
   const [advanceInput, setAdvanceInput] = useState("0");
@@ -67,7 +107,8 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
   const [sendingWa, setSendingWa] = useState<string | null>(null);
 
   const diagnosed = repairs
-    .filter((r) => (r.spareParts || []).length > 0)
+    .filter((r) => r.status !== "delivered" && r.status !== "ready")
+    .filter((r) => !(r.serviceType === "garantia" && r.warrantyCovered))
     .sort((a, b) => new Date(b.receptionDate).getTime() - new Date(a.receptionDate).getTime());
 
   const totalOf = (r: RepairItem): number => {
@@ -84,7 +125,8 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
     if (rep) {
       setAdvanceInput(String(rep.payment?.advancePayment || 0));
       setPayMethod(rep.payment?.paymentMethod || "efectivo");
-      setPayNotes(rep.payment?.paymentNotes || "");
+      const rawNotes = rep.payment?.paymentNotes || "";
+      setPayNotes(rawNotes === "Pendiente de presupuesto (lo define la asesora de servicio)." ? "" : rawNotes);
     }
   };
 
@@ -111,7 +153,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
         spareParts: parts,
         estimatedCost: total,
         approvalStatus: forceReset ? "pendiente" : r.approvalStatus || "pendiente",
-        approvalResponseAt: forceReset ? "" : r.approvalResponseAt,
+        approvalResponseAt: forceReset ? "" : (r.approvalResponseAt || ""),
         serviceAuthorized: forceReset ? false : r.approvalStatus === "aprobado",
         payment: {
           estimatedCost: total,
@@ -171,11 +213,51 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
     setPrices((prev) => ({ ...prev, [partId]: { ...prev[partId], [key]: value } }));
   };
 
+  const hasPriceChanges = (r: RepairItem): boolean =>
+    (r.spareParts || []).some((p) => {
+      const v = prices[p.id];
+      if (!v) return false;
+      const partNum = v.partPrice !== undefined && v.partPrice !== "" ? Number(v.partPrice) : p.partPrice;
+      const laborNum = v.laborPrice !== undefined && v.laborPrice !== "" ? Number(v.laborPrice) : p.laborPrice;
+      return partNum !== Number(p.partPrice) || laborNum !== Number(p.laborPrice);
+    });
+
   const priceValue = (p: SparePart, key: "partPrice" | "laborPrice"): string => {
     const v = prices[p.id];
     if (v && v[key] !== undefined) return v[key];
     const saved = p[key];
     return saved !== undefined && saved !== null ? String(saved) : "";
+  };
+
+  const addNewPart = async (r: RepairItem) => {
+    const desc = newPartDesc.trim();
+    if (!desc) return;
+    const part: SparePart = {
+      id: `part_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      description: desc,
+      type: newPartType,
+      source: newPartSource
+    };
+    const updated = [...(r.spareParts || []), part];
+    try {
+      await onUpdateRepair(r.id, { spareParts: updated });
+      setNewPartDesc("");
+      setNewPartType("cambio");
+    } catch (err) {
+      console.error(err);
+      alert("Error al agregar repuesto.");
+    }
+  };
+
+  const removeNewPart = async (r: SparePart, rep: RepairItem) => {
+    if (!confirm("¿Eliminar este repuesto/servicio?")) return;
+    const updated = (rep.spareParts || []).filter(p => p.id !== r.id);
+    try {
+      await onUpdateRepair(rep.id, { spareParts: updated });
+    } catch (err) {
+      console.error(err);
+      alert("Error al eliminar repuesto.");
+    }
   };
 
   return (
@@ -311,19 +393,34 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
                       )}
                     </div>
 
+                    {/* Recomendaciones del técnico */}
+                    {(rep.recommendations || rep.technicianNotes) && (
+                      <div className="mb-4 bg-amber-500/5 border border-amber-500/20 rounded-xl p-3">
+                        <p className="text-[10px] font-black uppercase tracking-wider text-amber-400 mb-1">
+                          Recomendaciones del técnico
+                        </p>
+                        <p className="text-xs text-slate-200">{rep.recommendations || rep.technicianNotes}</p>
+                      </div>
+                    )}
+
                     {/* Lista de repuestos con precios */}
                     <div className="mb-4">
                       <p className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center space-x-1.5">
                         <Package className="w-4 h-4 text-amber-400" />
-                        <span>Repuestos / Trabajos del técnico</span>
+                        <span>Repuestos / Trabajos de mantenimiento</span>
                       </p>
                       <div className="space-y-2">
                         {parts.map((p) => (
                           <div key={p.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800">
                             <div className="flex items-center space-x-2 min-w-0 flex-1">
-                              <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wide shrink-0 ${p.type === "cambio" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : "bg-blue-500/15 text-blue-400 border border-blue-500/25"}`}>
-                                {p.type === "cambio" ? "Cambiar" : "Reparar"}
+                              <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wide shrink-0 ${p.type === "cambio" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : p.type === "mantenimiento" ? "bg-violet-500/15 text-violet-400 border border-violet-500/25" : "bg-blue-500/15 text-blue-400 border border-blue-500/25"}`}>
+                                {p.type === "cambio" ? "Cambiar" : p.type === "mantenimiento" ? "Mant." : "Reparar"}
                               </span>
+                              {p.source && (
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wide shrink-0 ${p.source === "cliente" ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25" : "bg-violet-500/15 text-violet-400 border border-violet-500/25"}`}>
+                                  {p.source === "cliente" ? "Cliente" : "Mant."}
+                                </span>
+                              )}
                               <span className="text-xs text-slate-100 font-medium truncate">{p.description}</span>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
@@ -351,9 +448,68 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
                                   className="w-28 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 text-xs placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
                                 />
                               </div>
+                              <button
+                                type="button"
+                                onClick={() => removeNewPart(p, rep)}
+                                className="mt-4 p-1.5 text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
+                                title="Eliminar"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             </div>
                           </div>
                         ))}
+                      </div>
+                    </div>
+
+                    {/* Agregar repuesto/servicio adicional */}
+                    <div className="mb-4 bg-slate-950 rounded-xl border border-slate-800 p-4">
+                      <p className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-3 flex items-center space-x-1.5">
+                        <Plus className="w-4 h-4 text-amber-400" />
+                        <span>Agregar repuesto / servicio</span>
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="flex gap-1.5 shrink-0">
+                          {[
+                            { value: "cambio", label: "Cambiar" },
+                            { value: "reparacion", label: "Reparar" },
+                            { value: "mantenimiento", label: "Mant." }
+                          ].map(opt => (
+                            <button
+                              type="button"
+                              key={opt.value}
+                              onClick={() => setNewPartType(opt.value as "cambio" | "reparacion" | "mantenimiento")}
+                              className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase border transition-all ${
+                                newPartType === opt.value
+                                  ? opt.value === "cambio"
+                                    ? "bg-amber-500/15 text-amber-400 border-amber-500/40"
+                                    : opt.value === "reparacion"
+                                    ? "bg-blue-500/15 text-blue-400 border-blue-500/40"
+                                    : "bg-violet-500/15 text-violet-400 border-violet-500/40"
+                                  : "bg-slate-950 text-slate-500 border-slate-800 hover:bg-slate-900"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="text"
+                          value={newPartDesc}
+                          onChange={(e) => setNewPartDesc(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") addNewPart(rep); }}
+                          placeholder="Ej. Cambiar acelerador, reparación de frenos..."
+                          className="flex-1 px-3 py-2 rounded-xl border border-slate-700 bg-slate-950 text-slate-100 text-xs placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => addNewPart(rep)}
+                          disabled={!newPartDesc.trim()}
+                          className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-black uppercase disabled:opacity-40 transition-all shrink-0"
+                        >
+                          <Plus className="w-3.5 h-3.5 inline mr-1" />
+                          Agregar
+                        </button>
                       </div>
                     </div>
 
@@ -440,7 +596,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
                           type="text"
                           value={payNotes}
                           onChange={e => setPayNotes(e.target.value)}
-                          placeholder="Ej. Adelanto por Yape, saldo al retirar..."
+                          placeholder=""
                           className="w-full px-3 py-2 rounded-xl border border-slate-700 bg-slate-950 text-slate-100 text-sm focus:outline-none focus:border-emerald-500"
                         />
                       </div>
@@ -453,10 +609,66 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
                           <span>Presupuesto y pago guardado</span>
                         </span>
                       )}
+
+                      {rep.status === "paid" && rep.approvalStatus === "aprobado" && (
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setAssignMenuId(assignMenuId === rep.id ? null : rep.id)}
+                            disabled={assigningId === rep.id}
+                            className="inline-flex items-center space-x-2 px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl font-black text-xs uppercase tracking-wider transition-all disabled:opacity-50 shadow-[0_0_15px_rgba(245,158,11,0.25)]"
+                          >
+                            <Menu className="w-4 h-4" />
+                            <span>Técnico por asignar</span>
+                            <ChevronDown className="w-4 h-4" />
+                          </button>
+
+                          {assignMenuId === rep.id && (
+                            <div className="absolute right-0 bottom-full mb-2 w-64 z-30 bg-slate-950 border border-amber-500/30 rounded-xl p-2 shadow-2xl">
+                              <p className="px-2 py-1 text-[9px] uppercase tracking-wider text-amber-400 font-black">
+                                Elige el técnico que hará la reparación
+                              </p>
+                              {tecnicos.length === 0 && (
+                                <p className="px-2 py-2 text-[11px] text-amber-300">
+                                  No hay técnicos registrados para esta sede. Regístralos en la pestaña Accesos.
+                                </p>
+                              )}
+                              <div className="max-h-48 overflow-y-auto">
+                                {tecnicos.map((tn) => {
+                                  const isDiag = norm(tn) === norm(rep.assignedTech);
+                                  return (
+                                    <button
+                                      key={tn}
+                                      type="button"
+                                      onClick={() => assignTech(rep, tn)}
+                                      disabled={assigningId === rep.id}
+                                      className={`w-full text-left px-2.5 py-2 rounded-lg text-xs font-bold transition-colors flex items-center space-x-2 ${
+                                        isDiag
+                                          ? "bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                                          : "text-slate-200 hover:bg-slate-800"
+                                      }`}
+                                    >
+                                      <User className="w-3.5 h-3.5 shrink-0" />
+                                      <span className="truncate">{tn}</span>
+                                      {isDiag && (
+                                        <span className="ml-auto text-[9px] font-black text-amber-400 uppercase shrink-0">Diagnóstico</span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {assigningId === rep.id && (
+                                <p className="px-2 py-1.5 text-[10px] text-cyan-400 font-bold animate-pulse">Asignando técnico...</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => shareWhatsApp(rep)}
-                        disabled={sendingWa === rep.id}
+                        disabled={sendingWa === rep.id || (rep.approvalStatus === "aprobado" && !hasPriceChanges(rep))}
                         className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center space-x-2 disabled:opacity-50 shadow-[0_0_15px_rgba(16,185,129,0.25)]"
                       >
                         <MessageCircle className="w-4 h-4" />
@@ -469,7 +681,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
                         className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center space-x-2 disabled:opacity-50 shadow-[0_0_15px_rgba(245,158,11,0.25)]"
                       >
                         <Save className="w-4 h-4" />
-                        <span>{saving ? "Guardando..." : "Guardar Presupuesto y Pago"}</span>
+                        <span>{saving ? "Guardando..." : "Guardar Presupuesto"}</span>
                       </button>
                     </div>
                   </div>

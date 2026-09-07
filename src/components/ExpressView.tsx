@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { Printer, Plus, Minus, Store, User, Hash, Receipt, RotateCcw, ChevronDown, ChevronUp, Settings, Trash, Zap, Wrench } from "lucide-react";
-import { db, isFirebaseConfigured, collection, doc, getDocs, getDoc, setDoc, deleteDoc, query, orderBy, limit, serverTimestamp } from "../firebase";
+import { Printer, Plus, Minus, Store, User, Hash, Receipt, RotateCcw, ChevronDown, ChevronUp, Settings, Trash, Zap, Wrench, XCircle, Check } from "lucide-react";
+import { db, isFirebaseConfigured, collection, doc, getDocs, getDoc, setDoc, query, where, orderBy, limit, serverTimestamp } from "../firebase";
+import { nextClientId } from "../data/idGenerator";
 
 interface ExpressService {
   id: string;
@@ -32,11 +33,15 @@ interface ExpressReceipt {
   ruc: string;
   clientName: string;
   clientDni: string;
+  clientPhone: string;
+  vehicleType: string;
   technicianName: string;
   createdBy?: string;
   seq?: number;
   items: ReceiptItem[];
   total: number;
+  annulled?: boolean;
+  annulledAt?: string;
 }
 
 const LOCALES = [
@@ -133,11 +138,15 @@ function sanitizeReceipt(raw: unknown): ExpressReceipt {
     ruc: str(r.ruc),
     clientName: str(r.clientName),
     clientDni: str(r.clientDni),
+    clientPhone: str(r.clientPhone),
+    vehicleType: str(r.vehicleType),
     technicianName: str(r.technicianName),
     createdBy: str(r.createdBy),
     seq: num(r.seq),
     items,
-    total: num(r.total, items.reduce((s, i) => s + i.subtotal, 0))
+    total: num(r.total, items.reduce((s, i) => s + i.subtotal, 0)),
+    annulled: r.annulled === true,
+    annulledAt: str(r.annulledAt)
   };
 }
 
@@ -210,8 +219,10 @@ function printReceipt(receipt: ExpressReceipt) {
   .total { display: flex; justify-content: space-between; font-size: 11px; font-weight: 900; }
   .thanks { text-align: center; font-size: 9px; font-weight: 600; }
   .small { text-align: center; font-size: 8px; }
+  .anulado { text-align: center; font-size: 14px; font-weight: 900; color: #dc2626; border: 3px solid #dc2626; border-radius: 4px; padding: 2px 8px; margin: 6px auto; display: inline-block; letter-spacing: 3px; }
+  .watermark { position: relative; }
 </style></head><body>
-  <div class="center">
+  <div class="center watermark">
     <h1>LITIO<span style="color:#06b6d4">ENERGY</span></h1>
     <p class="muted bold">${esc(receipt.businessName)}</p>
     ${receipt.ruc ? `<p class="muted">RUC: ${esc(receipt.ruc)}</p>` : ""}
@@ -228,11 +239,15 @@ function printReceipt(receipt: ExpressReceipt) {
   ${receipt.createdBy && receipt.createdBy !== receipt.technicianName ? `<p class="muted">Registrado por: ${esc(receipt.createdBy)}</p>` : ""}
   <p class="muted">Cliente: ${esc(receipt.clientName) || "&mdash;"}</p>
   <p class="muted">DNI/RUC: ${esc(receipt.clientDni) || "&mdash;"}</p>
+  ${receipt.vehicleType ? `<p class="muted">Vehículo: ${esc(receipt.vehicleType)}</p>` : ""}
+  ${receipt.clientPhone ? `<p class="muted">Celular: ${esc(receipt.clientPhone)}</p>` : ""}
+  ${receipt.annulled ? `<div class="center"><span class="anulado">ANULADO</span></div>` : ""}
   <div class="dashed"></div>
   ${itemsHtml}
   <div class="dashed"></div>
   <div class="total"><span>TOTAL</span><span>${money(receipt.total)}</span></div>
   <div class="dashed"></div>
+  ${receipt.annulled ? `<div class="center"><div class="anulado">ANULADO</div></div><div class="dashed"></div>` : ""}
   <p class="thanks">&iexcl;Gracias por su visita!</p>
   <p class="small">Servicio Express &middot; Litio Energy</p>
 </body></html>`;
@@ -281,7 +296,10 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
   const [hydrating, setHydrating] = useState(false);
   const [clientName, setClientName] = useState("");
   const [clientDni, setClientDni] = useState("");
-  const [technicianName, setTechnicianName] = useState(userName || "");
+  const [clientPhone, setClientPhone] = useState("");
+  const [vehicleType, setVehicleType] = useState("");
+  const [technicianName, setTechnicianName] = useState("");
+  const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [preview, setPreview] = useState<ExpressReceipt | null>(null);
   const [showConfig, setShowConfig] = useState(false);
 
@@ -339,6 +357,17 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
     } catch {}
   }, [config, localKey]);
 
+  useEffect(() => {
+    if (searchStatus === "found" || searchStatus === "busy") return;
+    const digits = clientDni.replace(/\D/g, "");
+    if (digits.length === 8 || digits.length === 11) {
+      const t = setTimeout(() => {
+        handleSearchClient();
+      }, 350);
+      return () => clearTimeout(t);
+    }
+  }, [clientDni]);
+
   const selectedTotal = services.reduce((sum, s) => sum + s.price * s.qty, 0);
   const selectedCount = services.reduce((sum, s) => sum + (s.qty > 0 ? 1 : 0), 0);
 
@@ -372,6 +401,49 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
     setServices((prev) => prev.filter((s) => s.id !== id));
   };
 
+  const handleSearchClient = async () => {
+    const input = clientDni.trim();
+    if (!input) {
+      alert("Ingresa el DNI, C.E o RUC del cliente para buscar.");
+      return;
+    }
+    setSearchStatus("busy");
+    try {
+      let match: any = null;
+      if (isFirebaseConfigured && db) {
+        try {
+          const localQ = query(collection(db, "clientes", localKey, "clientes"), where("dni", "==", input));
+          const localSnap = await getDocs(localQ);
+          if (!localSnap.empty) match = localSnap.docs[0].data();
+        } catch (e) {
+          console.error("Error buscando cliente del local:", e);
+        }
+        if (!match) {
+          try {
+            // Acepta clientes de CUALQUIER sede: un DNI es único por persona
+            const q = query(collection(db, "clientes"), where("dni", "==", input));
+            const snap = await getDocs(q);
+            for (const d of snap.docs) {
+              match = d.data() as any;
+              break;
+            }
+          } catch (e) {
+            console.error("Error buscando cliente global:", e);
+          }
+        }
+      }
+      if (match && (match.name || match.phone)) {
+        setClientName(match.name || "");
+        setClientPhone(match.phone || "");
+        setSearchStatus("found");
+      } else {
+        setSearchStatus("empty");
+      }
+    } finally {
+      setSearchStatus((s) => (s === "busy" ? null : s));
+    }
+  };
+
   const generateReceipt = async () => {
     const items: ReceiptItem[] = services
       .filter((s) => s.qty > 0 && s.price > 0 && s.name.trim())
@@ -388,7 +460,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
     let count = loadCount(localKey);
     let maxSeq = history.reduce((m, r) => Math.max(m, r.seq || 0), 0);
     if (isFirebaseConfigured && db) {
-      const metaRef = doc(db, "recibos_express", localKey, "meta");
+      const metaRef = doc(db, "recibos_express", localKey, "meta", "count");
       try {
         const metaSnap = await getDoc(metaRef);
         const metaCount = metaSnap.exists() && typeof metaSnap.data().count === "number" ? metaSnap.data().count : 0;
@@ -407,7 +479,9 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
       ruc: config.ruc,
       clientName: clientName.trim(),
       clientDni: clientDni.trim(),
-      technicianName: technicianName.trim() || userName || "",
+      clientPhone: clientPhone.trim(),
+      vehicleType: vehicleType.trim(),
+      technicianName: technicianName.trim(),
       createdBy: userName || "",
       seq: nextCount,
       items,
@@ -417,12 +491,38 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
 
     if (isFirebaseConfigured && db) {
       try {
-        await setDoc(doc(db, "recibos_express", localKey, "meta"), { count: nextCount }, { merge: true });
+        await setDoc(doc(db, "recibos_express", localKey, "meta", "count"), { count: nextCount }, { merge: true });
         await setDoc(doc(db, "recibos_express", localKey, "recibos", correlative), receiptToFirestore(receipt, nextCount));
       } catch (e) {
         console.error("Error guardando recibo en Firestore:", e);
       }
     }
+
+    // Sincronizar cliente del Express: dar ID interno CLI-XXXXXX si es nuevo
+    if (isFirebaseConfigured && db) {
+      try {
+        const dniSync = receipt.clientDni || "";
+        const phoneSync = receipt.clientPhone || "";
+        const clientRef = doc(db, "clientes", dniSync || phoneSync || correlative);
+        const existing = await getDoc(clientRef);
+        const existingData = existing.exists() ? (existing.data() as any) : null;
+        const internalId = existingData?.internalId || await nextClientId();
+        const clientDoc = {
+          internalId,
+          name: receipt.clientName || "",
+          phone: phoneSync,
+          dni: dniSync,
+          vehicleType: receipt.vehicleType || "",
+          source: "express",
+          createdAt: existingData?.createdAt || Date.now(),
+          updatedAt: Date.now()
+        };
+        await setDoc(clientRef, clientDoc, { merge: true });
+      } catch (e) {
+        console.error("Error sincronizando cliente Express:", e);
+      }
+    }
+
     try {
       localStorage.setItem(countKey(localKey), String(nextCount));
     } catch {}
@@ -442,18 +542,29 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
     printReceipt(preview);
   };
 
-  const removeReceipt = (corr: string) => {
-    setHistory((prev) => prev.filter((x) => x.correlative !== corr));
+  const toggleAnnulled = (corr: string) => {
+    const target = history.find((x) => x.correlative === corr);
+    if (!target) return;
+    const annulled = !target.annulled;
+    const updated = history.map((x) =>
+      x.correlative === corr ? { ...x, annulled, annulledAt: annulled ? new Date().toISOString() : "" } : x
+    );
+    setHistory(updated);
     try {
-      localStorage.setItem(
-        historyKey(localKey),
-        JSON.stringify(history.filter((x) => x.correlative !== corr))
-      );
+      localStorage.setItem(historyKey(localKey), JSON.stringify(updated));
     } catch {}
     if (isFirebaseConfigured && db) {
-      deleteDoc(doc(db, "recibos_express", localKey, "recibos", corr)).catch(() => {});
+      const docRef = doc(db, "recibos_express", localKey, "recibos", corr);
+      setDoc(
+        docRef,
+        {
+          annulled,
+          annulledAt: annulled ? new Date().toISOString() : null
+        },
+        { merge: true }
+      ).catch(() => {});
     }
-    if (preview?.correlative === corr) setPreview(null);
+    if (preview?.correlative === corr) setPreview(updated.find((x) => x.correlative === corr) || null);
   };
 
   return (
@@ -549,6 +660,35 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                 <span>Datos del cliente</span>
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">DNI / C.E / RUC</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      autoComplete="off"
+                      value={clientDni}
+                      onChange={(e) => {
+                        setClientDni(e.target.value.replace(/[^\d]/g, "").slice(0, 11));
+                        setSearchStatus(null);
+                      }}
+                      placeholder="8 o 11 dígitos"
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-cyan-500/50"
+                    />
+                    <button
+                      onClick={handleSearchClient}
+                      disabled={searchStatus === "busy"}
+                      className="shrink-0 px-3 py-2 bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 rounded-lg text-xs font-bold text-cyan-300 transition-colors disabled:opacity-50"
+                    >
+                      {searchStatus === "busy" ? "Buscando..." : "Buscar"}
+                    </button>
+                  </div>
+                  {searchStatus === "found" && (
+                    <p className="text-[10px] font-semibold text-emerald-400 mt-1">Cliente encontrado: se completaron los datos.</p>
+                  )}
+                  {searchStatus === "empty" && (
+                    <p className="text-[10px] font-semibold text-amber-400 mt-1">No se encontró un cliente registrado con ese documento.</p>
+                  )}
+                </div>
                 <div>
                   <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Nombre del cliente</label>
                   <input
@@ -561,18 +701,29 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">DNI o RUC</label>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Celular</label>
                   <input
                     type="text"
                     autoComplete="off"
-                    value={clientDni}
-                    onChange={(e) => setClientDni(e.target.value.replace(/[^\d]/g, "").slice(0, 11))}
-                    placeholder="8 o 11 dígitos"
+                    value={clientPhone}
+                    onChange={(e) => setClientPhone(e.target.value.replace(/[^\d]/g, "").slice(0, 9))}
+                    placeholder="9XXXXXXXX"
                     className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-cyan-500/50"
                   />
                 </div>
-                <div className="sm:col-span-2">
-                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Atendido por</label>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Tipo de vehículo</label>
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    value={vehicleType}
+                    onChange={(e) => setVehicleType(e.target.value)}
+                    placeholder="Ej: scooter, moto, bici"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-cyan-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Técnico que realizó el trabajo</label>
                   <input
                     type="text"
                     autoComplete="off"
@@ -748,25 +899,36 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                     <div
                       key={r.correlative}
                       onClick={() => setPreview(r)}
-                      className="flex items-center justify-between gap-2 p-2.5 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer hover:border-cyan-500/40 transition-colors"
+                      className={`flex items-center justify-between gap-2 p-2.5 bg-slate-950 border rounded-xl cursor-pointer transition-colors ${
+                        r.annulled ? "border-rose-500/30 opacity-70" : "border-slate-800 hover:border-cyan-500/40"
+                      }`}
                     >
                       <div className="min-w-0">
-                        <p className="text-xs font-bold text-cyan-300 font-mono">{r.correlative}</p>
+                        <p className={`text-xs font-bold font-mono ${r.annulled ? "text-rose-400 line-through" : "text-cyan-300"}`}>{r.correlative}</p>
                         <p className="text-[10px] text-slate-500 truncate">
+                          {r.annulled ? "ANULADO · " : ""}
                           {r.clientName || "Sin cliente"} · {r.date}
                         </p>
                       </div>
                       <div className="flex items-center space-x-2 shrink-0">
-                        <span className="text-xs font-black text-white">{money(r.total)}</span>
+                        <span className={`text-xs font-black ${r.annulled ? "text-rose-400 line-through" : "text-white"}`}>{money(r.total)}</span>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            removeReceipt(r.correlative);
+                            if (r.annulled) {
+                              toggleAnnulled(r.correlative);
+                            } else if (confirm(`¿Anular el recibo ${r.correlative}? No se eliminará, quedará marcado como ANULADO.`)) {
+                              toggleAnnulled(r.correlative);
+                            }
                           }}
-                          className="p-1.5 text-slate-600 hover:text-rose-400 transition-colors"
-                          title="Eliminar"
+                          className={`p-1.5 rounded-lg border transition-colors ${
+                            r.annulled
+                              ? "text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10"
+                              : "text-rose-400 border-rose-500/30 hover:bg-rose-500/10"
+                          }`}
+                          title={r.annulled ? "Restaurar recibo" : "Anular recibo"}
                         >
-                          <Trash className="w-3.5 h-3.5" />
+                          {r.annulled ? <Check className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
                         </button>
                       </div>
                     </div>
@@ -785,9 +947,16 @@ function ReceiptPaper({ receipt }: { receipt: ExpressReceipt }) {
   return (
     <div
       id="express-receipt-print"
-      className="w-[300px] bg-white text-black font-mono text-[11px] leading-snug rounded-lg shadow-2xl overflow-hidden"
+      className="w-[300px] bg-white text-black font-mono text-[11px] leading-snug rounded-lg shadow-2xl overflow-hidden relative"
     >
-      <div className="px-5 py-4">
+      {receipt.annulled && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+          <div className="text-rose-500 text-4xl font-black tracking-[0.2em] uppercase opacity-30 -rotate-[25deg] border-4 border-rose-500 rounded-lg px-5 py-2">
+            Anulado
+          </div>
+        </div>
+      )}
+      <div className={`px-5 py-4 ${receipt.annulled ? "opacity-70" : ""}`}>
         <div className="text-center mb-2">
           <p className="text-[13px] font-black tracking-tight">LITIO<span className="text-cyan-500">ENERGY</span></p>
           <p className="text-[9px] font-bold">{receipt.businessName}</p>
@@ -807,6 +976,8 @@ function ReceiptPaper({ receipt }: { receipt: ExpressReceipt }) {
         )}
         <p className="text-[9px]">Cliente: {receipt.clientName || "—"}</p>
         <p className="text-[9px]">DNI/RUC: {receipt.clientDni || "—"}</p>
+        {receipt.vehicleType && <p className="text-[9px]">Vehículo: {receipt.vehicleType}</p>}
+        {receipt.clientPhone && <p className="text-[9px]">Celular: {receipt.clientPhone}</p>}
         <div className="border-t border-dashed border-black my-2"></div>
         {receipt.items.map((item, idx) => (
           <div key={idx} className="mb-1">
@@ -825,6 +996,9 @@ function ReceiptPaper({ receipt }: { receipt: ExpressReceipt }) {
         <div className="border-t border-dashed border-black my-2"></div>
         <p className="text-center text-[9px] font-semibold">¡Gracias por su visita!</p>
         <p className="text-center text-[8px]">Servicio Express · Litio Energy</p>
+        {receipt.annulled && (
+          <p className="text-center text-[9px] font-black text-rose-600 mt-2">*** RECIBO ANULADO ***</p>
+        )}
       </div>
     </div>
   );

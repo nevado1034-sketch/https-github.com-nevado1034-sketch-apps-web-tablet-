@@ -126,7 +126,7 @@ export default function AccessManager({ initial, onSave, saveLabel }: AccessMana
             {/* Jefa */}
             <p className="text-[10px] uppercase font-bold tracking-wider text-violet-400 mb-2 flex items-center space-x-1.5">
               <UserRound className="w-3.5 h-3.5" />
-              <span>Jefa del local (nombre y clave)</span>
+              <span>Asesora de Servicio (nombre y clave)</span>
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
               <div className="relative">
@@ -135,7 +135,7 @@ export default function AccessManager({ initial, onSave, saveLabel }: AccessMana
                   type="text"
                   value={loc.jefa.name}
                   onChange={(e) => updateJefa(locIdx, "name", e.target.value)}
-                  placeholder="Nombre de la jefa"
+                  placeholder="Nombre de la asesora"
                   className="w-full pl-9 pr-3 py-2.5 bg-slate-950 text-slate-100 text-sm border border-slate-800 rounded-xl focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20"
                 />
               </div>
@@ -209,7 +209,7 @@ export default function AccessManager({ initial, onSave, saveLabel }: AccessMana
 
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
         <p className="text-[11px] text-slate-500">
-          Cada persona ingresa con su <b>nombre</b> y <b>clave</b>. Las jefas y técnicos solo verán la
+          Cada persona ingresa con su <b>nombre</b> y <b>clave</b>. Las asesoras y técnicos solo verán la
           información de su local; el administrador ve todos los locales.
         </p>
         <button

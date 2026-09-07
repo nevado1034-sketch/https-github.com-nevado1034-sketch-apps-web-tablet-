@@ -6,7 +6,8 @@ export type WorkshopBranch = 'lince_arenales' | 'surco' | 'san_borja' | 'lince_l
 export type RepairStatus = 
   | 'receptioned' 
   | 'diagnosing' 
-  | 'waiting_parts' 
+  | 'quoted'
+  | 'paid'
   | 'repairing' 
   | 'testing' 
   | 'ready' 
@@ -91,9 +92,10 @@ export interface HistoryLog {
 export interface SparePart {
   id: string;
   description: string;
-  type: "reparacion" | "cambio";
-  partPrice?: number; // Costo del repuesto (lo pone la jefa)
-  laborPrice?: number; // Mano de obra (lo pone la jefa)
+  type: "reparacion" | "cambio" | "mantenimiento";
+  partPrice?: number;
+  laborPrice?: number;
+  source?: "tecnico" | "cliente";
 }
 
 export interface RepairItem {
@@ -103,6 +105,7 @@ export interface RepairItem {
   source?: string; // Origen del registro: "tablet" (web) o "android"
   serviceType: ServiceType; // Tipo de Servicio
   serviceTypeDetail?: string; // Detail for "Cambio" or custom notes
+  warrantyCovered?: boolean; // Decisión del técnico: garantía cubierta (Sí) o no (No)
   client: ClientInfo;
   vehicle: VehicleInfo;
   accessories: Accessories;
@@ -110,7 +113,11 @@ export interface RepairItem {
   status: RepairStatus;
   aiDiagnostic: AiDiagnostic | null;
   technicianNotes: string;
+  workshopNotes?: string; // Comentario del técnico en su Mesa de Trabajo (separado del diagnóstico)
   technicianName?: string; // Nombre del técnico responsable del diagnóstico
+  diagnosisTech?: string; // Técnico que completó el diagnóstico (diagnosing -> quoted)
+  assignedTech?: string; // Nombre del técnico derivado por la asesora (mesa de trabajo)
+  assignedByName?: string; // Quién realizó la derivación
   estimatedCost: number;
   actualCost: number;
   payment?: PaymentInfo; // PDF payment section
@@ -126,12 +133,15 @@ export interface RepairItem {
   technicianSignatureName?: string; // Name of technician who signed
   repairPhotos?: string[]; // Photos taken during repair/maintenance
   spareParts?: SparePart[]; // Repuestos detectados por el técnico en el diagnóstico
+  recommendations?: string; // Recomendaciones adicionales del técnico (ej: cambiar llantas)
   qcReport?: QualityChecklist; // Control de calidad
   approvalStatus?: "pendiente" | "aprobado" | "rechazado"; // Respuesta del cliente vía WhatsApp
   approvalResponseAt?: string; // Fecha/hora en que el cliente respondió
   serviceAuthorized?: boolean; // True cuando el presupuesto fue aprobado por el cliente y guardado por la jefa
   clientEntryApproval?: "pendiente" | "aprobado" | "rechazado"; // Respuesta del cliente al ingreso del vehículo
   clientEntryResponseAt?: string; // Fecha/hora en que el cliente respondió al ingreso
+  scheduledDeadline?: string; // Fecha/hora límite programada por la asesora de servicio
+  serviceStartedAt?: string; // Fecha/hora en que inició el servicio
 }
 
 // Ítem binario del checklist de calidad: en buen estado / para cambio
@@ -174,7 +184,6 @@ export interface WorkshopStats {
   total: number;
   receptioned: number;
   diagnosing: number;
-  waiting_parts: number;
   repairing: number;
   testing: number;
   ready: number;

@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from "react";
-import { Camera, Upload, Trash2, Check, Video, RefreshCw, AlertCircle, Play, Square, MonitorPlay } from "lucide-react";
+import { Camera, Trash2, Check, Video, RefreshCw, AlertCircle, Play, Square, MonitorPlay, Maximize2 } from "lucide-react";
 
 export interface RecordedVideo {
   blob: Blob;
@@ -233,8 +233,8 @@ export function PhotoManager({
   const [cameraError, setCameraError] = useState("");
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [showSimulatedModal, setShowSimulatedModal] = useState(false);
+  const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Stop camera stream when component unmounts or active state changes
   useEffect(() => {
@@ -251,14 +251,25 @@ export function PhotoManager({
     setIsCameraActive(true);
     
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" }, // prefer rear camera
-        audio: false
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" } },
+          audio: false
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+      }
       setCameraStream(stream);
       if (videoRef.current) {
+        videoRef.current.srcObject = null;
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play().catch(() => {});
+        };
       }
     } catch (err: any) {
       console.warn("Real camera not accessible, falling back to simulated high-res tablet camera.", err);
@@ -304,22 +315,6 @@ export function PhotoManager({
     setIsCameraActive(false);
   };
 
-  // Upload file manually
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-
-    Array.from(files).forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          onPhotosChange([...photos, event.target.result as string]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
   const removePhoto = (index: number) => {
     const updated = [...photos];
     updated.splice(index, 1);
@@ -347,20 +342,21 @@ export function PhotoManager({
         </span>
       </div>
 
-      {/* Camera interface */}
+      {/* Camera interface — fullscreen */}
       {isCameraActive && (
-        <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden relative">
+        <div className="fixed inset-0 z-50 bg-black flex flex-col">
           <video
             ref={videoRef}
-            className="w-full aspect-video bg-black object-cover"
+            className="flex-1 w-full bg-black object-cover"
+            autoPlay
             playsInline
             muted
           />
-          <div className="absolute bottom-4 inset-x-0 flex justify-center space-x-3 px-4">
+          <div className="absolute bottom-6 inset-x-0 flex justify-center space-x-3 px-4">
             <button
               type="button"
               onClick={capturePhoto}
-              className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center space-x-1 shadow-lg transition-transform hover:scale-105"
+              className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-5 py-3 rounded-xl text-xs flex items-center space-x-1 shadow-lg transition-transform hover:scale-105"
             >
               <Check className="w-3.5 h-3.5" />
               <span>Tomar Foto</span>
@@ -368,7 +364,7 @@ export function PhotoManager({
             <button
               type="button"
               onClick={stopCamera}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-4 py-2 rounded-xl text-xs shadow-lg transition-transform hover:scale-105"
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-5 py-3 rounded-xl text-xs shadow-lg transition-transform hover:scale-105"
             >
               <span>Cancelar</span>
             </button>
@@ -378,7 +374,7 @@ export function PhotoManager({
 
       {/* Selection Actions */}
       {!isCameraActive && (
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3">
           {/* Capture with Camera */}
           <button
             type="button"
@@ -388,39 +384,6 @@ export function PhotoManager({
             <Camera className="w-5 h-5 group-hover:scale-110 transition-transform text-cyan-500" />
             <span className="text-xs font-bold">Activar Cámara</span>
             <span className="text-[9px] text-slate-500 font-mono">Toma foto instantánea</span>
-          </button>
-
-          {/* Upload File */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex flex-col items-center justify-center p-4 bg-slate-950 hover:bg-slate-850 border border-slate-800/80 hover:border-cyan-500/40 rounded-xl transition-all text-slate-300 hover:text-cyan-400 group space-y-1.5"
-          >
-            <Upload className="w-5 h-5 group-hover:scale-110 transition-transform text-cyan-500" />
-            <span className="text-xs font-bold">Subir Archivo</span>
-            <span className="text-[9px] text-slate-500 font-mono">JPG, PNG o video</span>
-          </button>
-
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            accept="image/*"
-            multiple
-            className="hidden"
-          />
-        </div>
-      )}
-
-      {/* Trigger simulated camera helper directly for convenience */}
-      {!isCameraActive && (
-        <div className="text-center">
-          <button
-            type="button"
-            onClick={() => setShowSimulatedModal(true)}
-            className="text-[10px] text-slate-500 hover:text-cyan-400 font-mono underline transition-colors"
-          >
-            ➔ Abrir Galería de Simulación de Tablet (Prueba rápida)
           </button>
         </div>
       )}
@@ -435,9 +398,14 @@ export function PhotoManager({
                 <img
                   src={url}
                   alt={`Evidencia ${idx + 1}`}
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-cover cursor-pointer hover:brightness-110 transition-all"
                   referrerPolicy="no-referrer"
+                  onClick={() => setSelectedPhoto(url)}
                 />
+                <div className="absolute top-1 left-1 flex items-center space-x-1 bg-slate-950/80 border border-cyan-800/40 text-cyan-300 rounded-md px-1.5 py-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Maximize2 className="w-3 h-3" />
+                  <span className="text-[8px] font-mono font-bold">AMPLIAR</span>
+                </div>
                 <button
                   type="button"
                   onClick={() => removePhoto(idx)}
@@ -452,6 +420,16 @@ export function PhotoManager({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Photo Lightbox */}
+      {selectedPhoto && (
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setSelectedPhoto(null)}>
+          <button type="button" onClick={() => setSelectedPhoto(null)} className="absolute top-4 right-4 text-white/70 hover:text-white z-50">
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+          <img src={selectedPhoto} alt="Evidencia ampliada" className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} />
         </div>
       )}
 
@@ -525,12 +503,16 @@ interface VideoRecorderProps {
 }
 
 export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderProps) {
+  const [isCameraActive, setIsCameraActive] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [blob, setBlob] = useState<Blob | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
+  const [blobType, setBlobType] = useState("video/webm");
+  const [showReview, setShowReview] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -562,7 +544,17 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const startRecording = async () => {
+  useEffect(() => {
+    if ((isCameraActive || isRecording) && streamRef.current && videoRef.current) {
+      videoRef.current.srcObject = null;
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.onloadedmetadata = () => {
+        videoRef.current?.play().catch(() => {});
+      };
+    }
+  }, [isCameraActive, isRecording]);
+
+  const openCamera = async () => {
     setError("");
     setBlob(null);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -570,62 +562,119 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
     setElapsed(0);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-
-      const candidates = [
-        "video/webm;codecs=vp9,opus",
-        "video/webm;codecs=vp8,opus",
-        "video/webm",
-        "video/mp4"
-      ];
-      const mime = candidates.find((t) => MediaRecorder.isTypeSupported(t)) || "video/webm";
-      blobTypeRef.current = mime;
-
-      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-      recorderRef.current = rec;
-      chunksRef.current = [];
-      rec.ondataavailable = (e) => {
-        if (e.data && e.data.size) chunksRef.current.push(e.data);
-      };
-      rec.onstop = () => {
-        const b = new Blob(chunksRef.current, { type: blobTypeRef.current });
-        setBlob(b);
-        setPreviewUrl(URL.createObjectURL(b));
-        stopStream();
-        stopTimer();
-      };
-
-      rec.start(1000);
-      setIsRecording(true);
-      timerRef.current = window.setInterval(() => {
-        setElapsed((p) => {
-          if (p + 1 >= VIDEO_MAX_SECONDS) {
-            stopRecording();
-            return p;
-          }
-          return p + 1;
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: true
         });
-      }, 1000);
+      } catch {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: true
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true
+          });
+        }
+      }
+      streamRef.current = stream;
+      setIsCameraActive(true);
     } catch (err) {
       console.error("Video camera error:", err);
       setError("No se pudo acceder a la cámara para grabar video. Verifica que el navegador tenga permiso de cámara (HTTPS requerido).");
-      setIsRecording(false);
+      setIsCameraActive(false);
     }
+  };
+
+  const beginRecording = () => {
+    if (!streamRef.current) return;
+
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+    // iOS Safari solo reproduce/graba MP4; Android/desktop webm (VP8 antes que VP9 por compatibilidad).
+    const candidates = isIOS
+      ? ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4"]
+      : [
+          "video/webm;codecs=vp8,opus",
+          "video/webm;codecs=vp8",
+          "video/webm",
+          "video/mp4"
+        ];
+
+    let rec: MediaRecorder | null = null;
+    let usedMime = "";
+    for (const mime of candidates) {
+      if (!MediaRecorder.isTypeSupported(mime)) continue;
+      try {
+        const candidate = mime ? new MediaRecorder(streamRef.current, { mimeType: mime }) : new MediaRecorder(streamRef.current);
+        candidate.start(1000);
+        rec = candidate;
+        usedMime = mime;
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!rec) {
+      try {
+        rec = new MediaRecorder(streamRef.current);
+        rec.start(1000);
+        usedMime = rec.mimeType || "video/webm";
+      } catch {
+        setError("No se pudo iniciar la grabación de video en este dispositivo.");
+        setIsRecording(false);
+        return;
+      }
+    }
+    blobTypeRef.current = usedMime;
+    recorderRef.current = rec;
+    chunksRef.current = [];
+    rec.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunksRef.current.push(e.data);
+    };
+    rec.onstop = () => {
+      const b = new Blob(chunksRef.current, { type: blobTypeRef.current });
+      setBlob(b);
+      setBlobType(blobTypeRef.current);
+      setPreviewUrl(URL.createObjectURL(b));
+      setIsRecording(false);
+      setIsCameraActive(false);
+      stopStream();
+      stopTimer();
+    };
+
+    setIsRecording(true);
+    setElapsed(0);
+    timerRef.current = window.setInterval(() => {
+      setElapsed((p) => {
+        if (p + 1 >= VIDEO_MAX_SECONDS) {
+          stopRecording();
+          return p;
+        }
+        return p + 1;
+      });
+    }, 1000);
   };
 
   const stopRecording = () => {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
+  };
+
+  const cancelCamera = () => {
+    stopStream();
+    setIsCameraActive(false);
     setIsRecording(false);
+    stopTimer();
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      try { recorderRef.current.stop(); } catch {}
+    }
   };
 
   const discard = () => {
@@ -633,6 +682,7 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
     setBlob(null);
     setPreviewUrl("");
     setElapsed(0);
+    setIsCameraActive(false);
   };
 
   const save = () => {
@@ -642,6 +692,14 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
   };
 
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+
+  const playPreview = () => {
+    setShowReview(true);
+  };
+
+  const closeReview = () => {
+    setShowReview(false);
+  };
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
@@ -668,30 +726,69 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
         </div>
       )}
 
-      {/* Recording */}
-      {isRecording && (
-        <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden relative">
+      {/* Camera preview — fullscreen before recording */}
+      {isCameraActive && !isRecording && (
+        <div className="fixed inset-0 z-50 bg-black flex flex-col">
           <video
             ref={videoRef}
-            className="w-full aspect-video bg-black object-cover"
+            className="flex-1 w-full bg-black object-cover"
+            autoPlay
             playsInline
             muted
           />
-          <div className="absolute top-3 left-3 flex items-center space-x-2 bg-slate-950/80 border border-rose-500/40 rounded-lg px-2.5 py-1">
+          <div className="absolute top-4 left-4 bg-slate-950/80 border border-slate-700/60 rounded-lg px-3 py-1.5 text-[10px] font-mono font-bold text-slate-300">
+            PREVISUALIZACIÓN
+          </div>
+          {branchLabel && (
+            <div className="absolute top-4 right-4 bg-slate-950/80 border border-cyan-500/30 rounded-lg px-3 py-1.5 text-[10px] font-mono font-bold text-cyan-300">
+              {branchLabel}
+            </div>
+          )}
+          <div className="absolute bottom-6 inset-x-0 flex justify-center space-x-3 px-4">
+            <button
+              type="button"
+              onClick={beginRecording}
+              className="flex items-center space-x-2 bg-rose-500 hover:bg-rose-400 text-white font-bold px-6 py-3 rounded-xl text-xs shadow-lg transition-transform hover:scale-105"
+            >
+              <Video className="w-4 h-4" />
+              <span>Iniciar Grabación</span>
+            </button>
+            <button
+              type="button"
+              onClick={cancelCamera}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-5 py-3 rounded-xl text-xs shadow-lg transition-transform hover:scale-105"
+            >
+              <span>Cancelar</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Recording — fullscreen */}
+      {isRecording && (
+        <div className="fixed inset-0 z-50 bg-black flex flex-col">
+          <video
+            ref={videoRef}
+            className="flex-1 w-full bg-black object-cover"
+            autoPlay
+            playsInline
+            muted
+          />
+          <div className="absolute top-4 left-4 flex items-center space-x-2 bg-slate-950/80 border border-rose-500/40 rounded-lg px-3 py-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
             <span className="font-mono text-xs font-black text-rose-400 tracking-widest">REC</span>
             <span className="font-mono text-xs font-bold text-slate-200">{fmt(elapsed)}</span>
           </div>
           {branchLabel && (
-            <div className="absolute bottom-3 left-3 bg-slate-950/80 border border-cyan-500/30 rounded-lg px-2.5 py-1 text-[10px] font-mono font-bold text-cyan-300">
+            <div className="absolute bottom-4 left-4 bg-slate-950/80 border border-cyan-500/30 rounded-lg px-3 py-1.5 text-[10px] font-mono font-bold text-cyan-300">
               LITIO ENERGY · {new Date().toLocaleString()} · {branchLabel}
             </div>
           )}
-          <div className="absolute bottom-3 right-3 flex justify-center space-x-3">
+          <div className="absolute bottom-4 right-4">
             <button
               type="button"
               onClick={stopRecording}
-              className="flex items-center space-x-1.5 bg-rose-500 hover:bg-rose-400 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-lg transition-transform hover:scale-105"
+              className="flex items-center space-x-1.5 bg-rose-500 hover:bg-rose-400 text-white font-bold px-5 py-3 rounded-xl text-xs shadow-lg transition-transform hover:scale-105"
             >
               <Square className="w-3.5 h-3.5" />
               <span>Detener ({fmt(elapsed)})</span>
@@ -701,9 +798,39 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
       )}
 
       {/* Preview */}
-      {!isRecording && blob && previewUrl && (
+      {!isCameraActive && !isRecording && blob && previewUrl && (
         <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
-          <video src={previewUrl} className="w-full aspect-video bg-black object-contain" controls playsInline />
+          <div
+            className="relative cursor-pointer group"
+            onClick={(e) => {
+              e.stopPropagation();
+              playPreview();
+            }}
+          >
+            <video
+              ref={previewRef}
+              className="w-full aspect-video bg-black object-contain"
+              controls
+              playsInline
+              preload="auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <source src={previewUrl} type={blobType} />
+            </video>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  playPreview();
+                }}
+                className="pointer-events-auto flex items-center space-x-2 bg-rose-500/95 hover:bg-rose-400 text-white rounded-full px-6 py-3 text-sm font-black shadow-xl transition-transform hover:scale-105"
+              >
+                <span className="text-base leading-none">▶</span>
+                <span>Revisar video</span>
+              </button>
+            </div>
+          </div>
           <div className="p-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800">
             <span className="text-[11px] font-mono text-slate-400">
               Video grabado · {fmt(elapsed)} · {(blob.size / 1024 / 1024).toFixed(2)} MB
@@ -718,7 +845,7 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
               </button>
               <button
                 type="button"
-                onClick={startRecording}
+                onClick={openCamera}
                 className="flex items-center space-x-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded-xl text-xs font-bold transition-colors"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -738,16 +865,48 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
       )}
 
       {/* Start */}
-      {!isRecording && !blob && (
+      {!isCameraActive && !isRecording && !blob && (
         <button
           type="button"
-          onClick={startRecording}
+          onClick={openCamera}
           className="w-full flex flex-col items-center justify-center p-5 bg-slate-950 hover:bg-slate-850 border border-dashed border-slate-800/80 hover:border-cyan-500/40 rounded-xl transition-all text-slate-300 hover:text-cyan-400 group space-y-2"
         >
           <Video className="w-6 h-6 text-cyan-500 group-hover:scale-110 transition-transform" />
           <span className="text-xs font-bold">Grabar Video</span>
           <span className="text-[9px] text-slate-500 font-mono">Recorrido del vehículo · máx {VIDEO_MAX_SECONDS} segundos</span>
         </button>
+      )}
+
+      {/* Fullscreen video review modal */}
+      {showReview && previewUrl && (
+        <div className="fixed inset-0 z-[60] bg-black flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 bg-slate-950/90 border-b border-slate-800">
+            <span className="text-xs font-bold text-slate-100 uppercase tracking-wider flex items-center space-x-2">
+              <MonitorPlay className="w-4 h-4 text-cyan-400" />
+              <span>Revisar Video Grabado</span>
+            </span>
+            <button
+              type="button"
+              onClick={closeReview}
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-bold transition-colors"
+            >
+              <span>Cerrar</span>
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+          <div className="flex-1 w-full flex items-center justify-center bg-black p-2">
+            <video
+              src={previewUrl}
+              className="max-h-full w-full object-contain"
+              controls
+              autoPlay
+              playsInline
+              preload="auto"
+            >
+              <source src={previewUrl} type={blobType} />
+            </video>
+          </div>
+        </div>
       )}
     </div>
   );

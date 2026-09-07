@@ -17,7 +17,8 @@ const BRANCH_LABELS: Record<string, string> = {
 const STATUS_LABELS: Record<string, string> = {
   receptioned: "En Cola / Recibidos",
   diagnosing: "En Diagnóstico",
-  waiting_parts: "Esperando Repuestos",
+  quoted: "Presupuesto",
+  paid: "Pagado",
   repairing: "En Reparación",
   testing: "En Pruebas",
   ready: "Listo para Entrega",

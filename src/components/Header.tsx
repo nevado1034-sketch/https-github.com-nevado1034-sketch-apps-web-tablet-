@@ -1,17 +1,22 @@
 import React, { useState } from "react";
-import { Tablet, Monitor, BarChart3, MessageSquare, RefreshCw, Sparkles, QrCode, X, Copy, Check, ExternalLink, Smartphone, LogOut, UserCircle2, Zap, KeyRound, ClipboardCheck, Calculator, Users } from "lucide-react";
+import { Tablet, Monitor, BarChart3, MessageSquare, RefreshCw, Sparkles, QrCode, X, Copy, Check, ExternalLink, Smartphone, LogOut, UserCircle2, Zap, KeyRound, ClipboardCheck, Calculator, Users, Wrench, Timer, UserPlus, ListChecks, LayoutDashboard } from "lucide-react";
 import { AuthSession, sessionLabel } from "../auth";
 import litioLogo from "../assets/litio-logo.png";
 
 const TABS = [
   { id: "reception", icon: Tablet, label: "Recepción" },
+  { id: "derivar", icon: UserPlus, label: "Clientes en Espera" },
   { id: "technician", icon: Monitor, label: "Diagnóstico" },
   { id: "presupuesto", icon: Calculator, label: "Presupuesto y Pago" },
+  { id: "control", icon: ListChecks, label: "Control de Procesos" },
+  { id: "repair", icon: Wrench, label: "Mesa de Trabajo" },
   { id: "calidad", icon: ClipboardCheck, label: "Control de Calidad" },
   { id: "express", icon: Zap, label: "Servicios Express" },
   { id: "chat", icon: MessageSquare, label: "Chat Clientes" },
   { id: "clientes", icon: Users, label: "Clientes" },
   { id: "dashboard", icon: BarChart3, label: "Estadísticas" },
+  { id: "tiempos", icon: Timer, label: "Tiempos por Proceso" },
+  { id: "admin-dashboard", icon: LayoutDashboard, label: "Panel de Control" },
   { id: "accesos", icon: KeyRound, label: "Accesos" }
 ];
 
@@ -126,7 +131,7 @@ export default function Header({ currentTab, setCurrentTab, isPolling, onRefresh
 
           {/* Fila de navegación / pestañas (con scroll horizontal si no caben) */}
           <div className="flex space-x-1 bg-slate-950 p-1 rounded-xl border border-slate-800 overflow-x-auto mb-2">
-            {TABS.filter((t) => allowedTabs.includes(t.id)).map((tab) => {
+            {TABS.filter((t) => allowedTabs.includes(t.id) && t.id !== "express").map((tab) => {
               const TabIcon = tab.icon;
               return (
                 <button

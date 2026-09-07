@@ -7,20 +7,23 @@ import {
   Mail,
   Printer,
   Calendar,
-  ChevronRight
+  ChevronRight,
+  CheckCircle
 } from "lucide-react";
 import { RepairItem, RepairStatus } from "../types";
 import { generateRepairPdf } from "../utils/pdfGenerator";
 
 interface ClientesViewProps {
   repairs: RepairItem[];
+  onUpdateRepair?: (id: string, updateData: any) => Promise<void>;
   userLocalKey?: string;
 }
 
 const STATUS_LABELS: Record<RepairStatus, string> = {
   receptioned: "Ingresado",
   diagnosing: "En Diagnóstico",
-  waiting_parts: "Esperando Repuestos",
+  quoted: "Presupuesto",
+  paid: "Pagado",
   repairing: "En Reparación",
   testing: "En Pruebas",
   ready: "Listo para Entrega",
@@ -30,7 +33,8 @@ const STATUS_LABELS: Record<RepairStatus, string> = {
 const STATUS_BADGES: Record<RepairStatus, string> = {
   receptioned: "bg-slate-500/10 text-slate-400 border-slate-500/25",
   diagnosing: "bg-cyan-500/10 text-cyan-400 border-cyan-500/25",
-  waiting_parts: "bg-amber-500/10 text-amber-400 border-amber-500/25",
+  quoted: "bg-amber-500/10 text-amber-400 border-amber-500/25",
+  paid: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
   repairing: "bg-blue-500/10 text-blue-400 border-blue-500/25",
   testing: "bg-purple-500/10 text-purple-400 border-purple-500/25",
   ready: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
@@ -95,7 +99,7 @@ function buildGroups(repairs: RepairItem[]): ClientGroup[] {
   return groups;
 }
 
-export default function ClientesView({ repairs, userLocalKey }: ClientesViewProps) {
+export default function ClientesView({ repairs, onUpdateRepair, userLocalKey }: ClientesViewProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
@@ -273,6 +277,24 @@ export default function ClientesView({ repairs, userLocalKey }: ClientesViewProp
                             <Printer className="w-3.5 h-3.5" />
                             <span className="hidden sm:inline">Ficha PDF</span>
                           </button>
+                          {r.status === "ready" && onUpdateRepair && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (!confirm(`¿Confirmar entrega del vehículo ${r.vehicle.brand} ${r.vehicle.model} a ${r.client.name}?`)) return;
+                                try {
+                                  await onUpdateRepair(r.id, { status: "delivered", deliveredAt: new Date().toISOString() });
+                                  alert("Vehículo marcado como Entregado.");
+                                } catch (err) {
+                                  alert("Error al entregar vehículo.");
+                                }
+                              }}
+                              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 hover:text-emerald-300 rounded-xl border border-emerald-500/30 hover:border-emerald-400/50 transition-all font-bold text-xs cursor-pointer"
+                            >
+                              <CheckCircle className="w-3.5 h-3.5" />
+                              <span>Entregado</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}

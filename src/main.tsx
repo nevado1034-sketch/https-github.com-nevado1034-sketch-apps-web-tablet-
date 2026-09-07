@@ -3,7 +3,7 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 
-const VERSION_KEY = "litio_tablet_version";
+const VERSION_KEY = "litio_tablet_version_v2";
 
 window.addEventListener("error", (e) => {
   try {

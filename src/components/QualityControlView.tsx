@@ -245,6 +245,8 @@ export default function QualityControlView({
   const [qcDraft, setQcDraft] = useState<QualityChecklist>(defaultQc);
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState<string | null>(null);
+  const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<{ url: string; durationSec: number } | null>(null);
 
   const openRepair = queue.find((r) => r.id === openId) || null;
 
@@ -273,7 +275,6 @@ export default function QualityControlView({
       };
       await onUpdateRepair(openRepair.id, {
         status: result === "approved" ? "ready" : "repairing",
-        technicianName: userName || "Control de Calidad",
         qcReport
       });
       setJustSaved(openRepair.id);
@@ -403,6 +404,8 @@ export default function QualityControlView({
                           <p className="flex justify-between"><span className="text-slate-500">DNI / C.E</span><span className="text-slate-100 font-semibold font-mono">{openRepair.client.dni}</span></p>
                           <p className="flex justify-between"><span className="text-slate-500">Teléfono</span><span className="text-slate-100 font-semibold">{openRepair.client.phone}</span></p>
                           <p className="flex justify-between"><span className="text-slate-500">Vehículo</span><span className="text-slate-100 font-semibold">{typeLabels[openRepair.vehicle.type] || openRepair.vehicle.type} {openRepair.vehicle.brand} {openRepair.vehicle.model}</span></p>
+                          <p className="flex justify-between"><span className="text-slate-500">Servicio de ingreso</span><span className="text-cyan-300 font-bold uppercase">{openRepair.serviceType === "mantenimiento" ? "Mantenimiento" : openRepair.serviceType === "diagnostico" ? "Diagnóstico" : openRepair.serviceType === "garantia" ? "Garantía" : openRepair.serviceType === "cambio" ? "Cambio de Repuesto" : openRepair.serviceType === "express" ? "Servicio Express" : "Diagnóstico"}</span></p>
+                          <p className="flex justify-between"><span className="text-slate-500">Derivado de</span><span className="text-slate-100 font-semibold">Mesa de Trabajo</span></p>
                           <p className="flex justify-between"><span className="text-slate-500">Voltaje</span><span className="text-slate-100 font-semibold">{openRepair.vehicle.voltage}</span></p>
                           <p className="flex justify-between"><span className="text-slate-500">Avería reportada</span><span className="text-slate-100 font-semibold text-right max-w-[60%]">{openRepair.vehicle.reportedFailure}</span></p>
                           <p className="flex justify-between"><span className="text-slate-500">Técnico</span><span className="text-slate-100 font-semibold">{openRepair.technicianName || "Sin asignar"}</span></p>
@@ -420,21 +423,25 @@ export default function QualityControlView({
                             </h3>
                             <div className="flex flex-wrap gap-2">
                               {(openRepair.visualState.photos || []).map((p, i) => (
-                                <a key={i} href={p} target="_blank" rel="noreferrer" className="block w-16 h-16 rounded-lg overflow-hidden border border-slate-800 bg-slate-900">
-                                  <img src={p} alt={`Foto ${i + 1}`} className="w-full h-full object-cover" />
-                                </a>
+                                <button
+                                  key={i}
+                                  type="button"
+                                  onClick={() => setPreviewPhoto(p)}
+                                  className="block w-16 h-16 rounded-lg overflow-hidden border border-slate-800 bg-slate-900 group"
+                                >
+                                  <img src={p} alt={`Foto ${i + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                                </button>
                               ))}
                               {(openRepair.visualState.videoEvidence || []).map((v, i) => (
-                                <a
+                                <button
                                   key={`v${i}`}
-                                  href={v.url}
-                                  target="_blank"
-                                  rel="noreferrer"
+                                  type="button"
+                                  onClick={() => setPreviewVideo({ url: v.url, durationSec: v.durationSec })}
                                   className="w-16 h-16 rounded-lg border border-cyan-500/30 bg-slate-900 flex flex-col items-center justify-center text-center text-cyan-400 hover:bg-slate-800 transition-colors"
                                 >
                                   <span className="text-lg">▶️</span>
                                   <span className="text-[8px] font-mono mt-0.5">{Math.round(v.durationSec)}s</span>
-                                </a>
+                                </button>
                               ))}
                             </div>
                           </div>
@@ -569,6 +576,46 @@ export default function QualityControlView({
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 bg-emerald-500 text-slate-950 rounded-xl shadow-2xl text-sm font-bold animate-fade-in">
           <Check className="w-4 h-4" />
           Control de calidad guardado correctamente
+        </div>
+      )}
+
+      {/* Modal de foto (las fotos en base64 no se abren en pestaña nueva) */}
+      {previewPhoto && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/95 p-4"
+          onClick={() => setPreviewPhoto(null)}
+        >
+          <div className="relative max-w-4xl w-full" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setPreviewPhoto(null)}
+              className="absolute top-3 right-3 z-10 p-2 bg-slate-900/90 hover:bg-slate-800 text-slate-200 rounded-full border border-slate-700"
+              aria-label="Cerrar"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img src={previewPhoto} alt="Evidencia fotográfica" className="w-full max-h-[90vh] object-contain rounded-xl border border-slate-800 bg-black" />
+          </div>
+        </div>
+      )}
+
+      {/* Modal de video */}
+      {previewVideo && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/95 p-4"
+          onClick={() => setPreviewVideo(null)}
+        >
+          <div className="relative max-w-4xl w-full" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setPreviewVideo(null)}
+              className="absolute top-3 right-3 z-10 p-2 bg-slate-900/90 hover:bg-slate-800 text-slate-200 rounded-full border border-slate-700"
+              aria-label="Cerrar"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <video src={previewVideo.url} controls autoPlay className="w-full max-h-[90vh] rounded-xl border border-slate-800 bg-black" />
+          </div>
         </div>
       )}
     </div>

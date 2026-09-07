@@ -6,9 +6,9 @@ import {
   Layers, 
   Sparkles, 
   CheckSquare, 
+  Check, 
   AlertTriangle, 
   Tv,
-  ArrowRight,
   MapPin,
   Video,
   Camera,
@@ -17,7 +17,8 @@ import {
   X,
   Package,
   Stethoscope,
-  Trash2
+  Trash2,
+  ClipboardCheck
 } from "lucide-react";
 import { RepairItem, RepairStatus, HistoryLog, WorkshopBranch, ServiceType, PaymentMethod, SparePart } from "../types";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
@@ -28,6 +29,9 @@ interface TechnicianViewProps {
   onUpdateRepair: (id: string, updateData: any) => Promise<void>;
   isLoading: boolean;
   userLocalKey?: string;
+  userName?: string;
+  userRole?: string;
+  initialMode?: "diagnostico" | "reparacion";
 }
 
 const BRANCH_SHORT_LABELS: Record<string, string> = {
@@ -37,16 +41,37 @@ const BRANCH_SHORT_LABELS: Record<string, string> = {
   lince_leal: "Leal"
 };
 
+const STATUS_SHORT_LABELS: Record<string, string> = {
+  receptioned: "Recibido",
+  diagnosing: "Diag",
+  repairing: "Mesa",
+  testing: "Calidad",
+  ready: "Listo",
+  delivered: "Entregado"
+};
+
 const STATUS_COLUMNS: Array<{ id: RepairStatus; label: string; bg: string; text: string; border: string }> = [
   { id: "receptioned", label: "En Cola / Recibidos", bg: "bg-slate-800/40", text: "text-slate-200", border: "border-slate-700/60" },
   { id: "diagnosing", label: "Diagnosticando", bg: "bg-cyan-950/20", text: "text-cyan-400", border: "border-cyan-900/40" },
-  { id: "waiting_parts", label: "Esperando Repuestos", bg: "bg-amber-950/20", text: "text-amber-400", border: "border-amber-900/40" },
-  { id: "repairing", label: "En Reparación", bg: "bg-blue-950/20", text: "text-blue-400", border: "border-blue-900/40" },
-  { id: "testing", label: "En Pruebas", bg: "bg-purple-950/20", text: "text-purple-400", border: "border-purple-900/40" },
+  { id: "repairing", label: "En Mesa de Trabajo", bg: "bg-blue-950/20", text: "text-blue-400", border: "border-blue-900/40" },
+  { id: "testing", label: "Control de Calidad", bg: "bg-purple-950/20", text: "text-purple-400", border: "border-purple-900/40" },
   { id: "ready", label: "Listo para Entrega", bg: "bg-emerald-950/20", text: "text-emerald-400", border: "border-emerald-900/40" }
 ];
 
-export default function TechnicianView({ repairs, onUpdateRepair, isLoading, userLocalKey }: TechnicianViewProps) {
+// El técnico en modo Diagnóstico/Reparación solo ve las órdenes que la asesora
+// le derivó ("mesa de trabajo"). Jefa y admin conservan la vista completa.
+// Sin técnico asignado = el vehículo está "En espera" (clientes en espera), no en diagnóstico.
+const hasAssignedTech = (r: { assignedTech?: string }) => !!(r.assignedTech || "").trim();
+
+const matchesAssignedTech = (assignedTech: string | undefined, userName: string | undefined, userRole: string | undefined) => {
+  if (userRole !== "tecnico") return true;
+  const me = (userName || "").trim().toLowerCase();
+  if (!me) return false;
+  const theirs = (assignedTech || "").trim().toLowerCase();
+  return theirs === me || theirs.includes(me) || me.includes(theirs);
+};
+
+export default function TechnicianView({ repairs, onUpdateRepair, isLoading, userLocalKey, userName, userRole, initialMode }: TechnicianViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(repairs[0]?.id || null);
   const [technicianName, setTechnicianName] = useState("");
   
@@ -68,14 +93,22 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   // Repuestos detectados por el técnico en el diagnóstico
   const [spareParts, setSpareParts] = useState<SparePart[]>([]);
   const [newPartDesc, setNewPartDesc] = useState("");
-  const [newPartType, setNewPartType] = useState<"reparacion" | "cambio">("reparacion");
+  const [newPartType, setNewPartType] = useState<"reparacion" | "cambio" | "mantenimiento">("reparacion");
 
   // Modo de trabajo del técnico: Diagnóstico (recién ingresados) o Reparación (taller completo)
-  const [techMode, setTechMode] = useState<"diagnostico" | "reparacion">("diagnostico");
+  const [techMode, setTechMode] = useState<"diagnostico" | "reparacion">(initialMode || "diagnostico");
 
   // Fotos y videos tomados durante el diagnóstico técnico
   const [diagPhotos, setDiagPhotos] = useState<string[]>([]);
   const [diagVideos, setDiagVideos] = useState<RecordedVideo[]>([]);
+  // Decisión del técnico: el servicio ingresado como garantía es cubierto o no
+  const [diagWarranty, setDiagWarranty] = useState(false);
+  // Lightbox de la evidencia registrada en recepción
+  const [receptionProof, setReceptionProof] = useState<{ type: "photo" | "video"; src: string; label?: string } | null>(null);
+
+  // Fotos y videos tomados durante el trabajo en Mesa de Trabajo
+  const [mesaPhotos, setMesaPhotos] = useState<string[]>([]);
+  const [mesaVideos, setMesaVideos] = useState<RecordedVideo[]>([]);
 
   const activeRepair = repairs.find(r => r.id === selectedId);
 
@@ -83,7 +116,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   // si la selección actual ya no corresponde a la cola de diagnóstico.
   React.useEffect(() => {
     if (techMode === "diagnostico") {
-      const queue = repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing");
+      const queue = repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole));
       const isCurrentInQueue = selectedId && queue.some(r => r.id === selectedId);
       if (queue.length > 0 && !isCurrentInQueue) {
         setSelectedId(queue[0].id);
@@ -91,22 +124,46 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         setSelectedId(null);
       }
     }
-  }, [techMode, repairs, selectedId]);
+  }, [techMode, repairs, selectedId, userName, userRole]);
+
+  // En modo Reparación, la vista trabaja sobre órdenes en "repairing" (en taller)
+  // y "testing" (enviadas a Control de Calidad, bloqueadas).
+  // Cuando una orden es aprobada (ready) o entregada (delivered), se deselecciona.
+  React.useEffect(() => {
+    if (techMode === "reparacion") {
+      const queue = repairs.filter(r => (r.status === "repairing" || r.status === "testing") && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole));
+      const isCurrentInQueue = selectedId && queue.some(r => r.id === selectedId);
+      if (queue.length > 0 && !isCurrentInQueue) {
+        setSelectedId(queue[0].id);
+      } else if (queue.length === 0 && selectedId) {
+        setSelectedId(null);
+      }
+    }
+  }, [techMode, repairs, selectedId, userName, userRole]);
 
   // Sync state whenever active repair changes
   React.useEffect(() => {
     if (activeRepair) {
-      setTechNotes(activeRepair.technicianNotes || "");
+      setTechNotes(techMode === "reparacion" ? (activeRepair.workshopNotes || "") : (activeRepair.technicianNotes || ""));
       setTechSignature(activeRepair.technicianSignature || "");
+      setTechnicianName(
+        (activeRepair.technicianName || "").replace(/^Téc\.\s*/i, "") ||
+        activeRepair.assignedTech ||
+        (userRole === "tecnico" ? userName : "") ||
+        ""
+      );
       setSpareParts(activeRepair.spareParts || []);
       setNewPartDesc("");
       setNewPartType("reparacion");
       setDiagPhotos(activeRepair.visualState.photos || []);
       setDiagVideos([]);
+      setDiagWarranty(activeRepair.serviceType === "garantia");
+      setMesaPhotos(activeRepair.workshopPhotos || []);
+      setMesaVideos([]);
       // Reset procedures check
       setCompletedProcedures({});
     }
-  }, [selectedId, activeRepair]);
+  }, [selectedId, activeRepair, techMode]);
 
   // Clock effect for TV Mode
   React.useEffect(() => {
@@ -124,28 +181,52 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   const handleUpdateStatus = async (newStatus: RepairStatus, extra?: Record<string, any>) => {
     if (!activeRepair) return;
 
+    const statusFlow: Record<string, string> = {
+      receptioned: "diagnosing",
+      diagnosing: "quoted",
+      quoted: "paid",
+      paid: "repairing",
+      repairing: "testing",
+      testing: "ready",
+      ready: "delivered"
+    };
+    if (statusFlow[activeRepair.status] !== newStatus) {
+      alert(`No se puede saltar de "${activeRepair.status}" a "${newStatus}". Se debe seguir el orden: Diagnóstico → Presupuesto → Pago → Mesa de Trabajo → Control de Calidad.`);
+      return;
+    }
+
+    if (activeRepair.status === "testing") {
+      alert("Este vehículo está en Control de Calidad. Solo la asesora de servicio puede cambiar su estado.");
+      return;
+    }
+
     if (newStatus === "ready" || newStatus === "delivered") {
       if (activeRepair.qcReport?.result !== "approved") {
-        alert("Esta orden primero debe pasar por Control de Calidad. La jefa del local debe aprobar la revisión antes de marcarla como Lista o Entregada.");
+        alert("Esta orden primero debe pasar por Control de Calidad. La asesora de servicio debe aprobar la revisión antes de marcarla como Lista o Entregada.");
         return;
       }
+    }
+
+    if (newStatus === "testing") {
       if (!technicianName || !technicianName.trim()) {
-        alert("¡Nombre de Técnico requerido! Por favor, ingrese su nombre de técnico responsable para poder marcar el vehículo como Listo o Entregado.");
+        alert("Debes ingresar el nombre del técnico responsable antes de enviar a Control de Calidad.");
         return;
       }
       if (!techSignature) {
-        alert("¡Firma requerida! Por favor, realice su firma digital en el recuadro 'Firma Digital del Técnico Responsable' para certificar que el vehículo está listo para entregar.");
+        alert("Debes registrar la firma del técnico responsable antes de enviar a Control de Calidad. Sin la firma del técnico el vehículo NO pasa a Pruebas.");
         return;
       }
     }
 
     const payload = {
       status: newStatus,
-      technicianNotes: techNotes,
+      technicianNotes: activeRepair.technicianNotes,
+      workshopNotes: techNotes,
       actualCost: activeRepair.actualCost || 0,
       technicianName: `Téc. ${technicianName}`,
       technicianSignature: techSignature,
       technicianSignatureName: `Téc. ${technicianName}`,
+      ...(activeRepair.status === "diagnosing" && newStatus === "quoted" ? { diagnosisTech: technicianName.trim() } : {}),
       ...(extra || {})
     };
 
@@ -161,16 +242,19 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     if (!activeRepair) return;
     
     const payload = {
-      technicianNotes: techNotes,
+      workshopNotes: techNotes,
       actualCost: activeRepair.actualCost || 0,
       technicianName: `Téc. ${technicianName}`,
       technicianSignature: techSignature,
-      technicianSignatureName: `Téc. ${technicianName}`
+      technicianSignatureName: `Téc. ${technicianName}`,
+      workshopPhotos: mesaPhotos,
+      workshopPhotosTaken: mesaPhotos.length > 0,
+      videoEvidenceBlobs: mesaVideos
     };
 
     try {
       await onUpdateRepair(activeRepair.id, payload);
-      alert("Notas, presupuesto y firma guardados con éxito.");
+      alert("Notas, presupuesto, fotos y firma guardados con éxito.");
     } catch (err) {
       console.error(err);
       alert("Error al guardar notas de taller.");
@@ -205,7 +289,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         spareParts: clean,
         technicianName: `Téc. ${technicianName}`
       });
-      alert("Repuestos/trabajos guardados. La jefa del local podrá colocar el presupuesto.");
+      alert("Repuestos/trabajos guardados. La asesora de servicio podrá colocar el presupuesto.");
     } catch (err) {
       console.error(err);
       alert("Error al guardar los repuestos.");
@@ -216,12 +300,23 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   // Además pasa el vehículo de "Recepción" a "En Diagnóstico" automáticamente.
   const handleSaveDiagnosis = async () => {
     if (!activeRepair) return;
+    if (!technicianName.trim()) {
+      alert("Debes ingresar el nombre del técnico responsable antes de guardar el diagnóstico.");
+      return;
+    }
     const clean = spareParts.filter((p) => p.description.trim());
+
+    // Si el servicio ingresó como garantía, el técnico decide si aplica la cobertura.
+    // Sí → pasa directo a Mesa de Trabajo. No → repuestos y va a Presupuesto y Pago.
+    const isWarranty = diagWarranty;
 
     const payload: any = {
       technicianNotes: techNotes,
       spareParts: clean,
       technicianName: `Téc. ${technicianName}`,
+      serviceType: activeRepair.serviceType === "garantia" ? "garantia" : activeRepair.serviceType,
+      warrantyCovered: isWarranty,
+      status: isWarranty ? "repairing" : "quoted",
       visualState: {
         ...activeRepair.visualState,
         photos: diagPhotos,
@@ -230,18 +325,10 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       videoEvidenceBlobs: diagVideos
     };
 
-    if (activeRepair.status === "receptioned") {
-      payload.status = "diagnosing";
-    }
-
     try {
       await onUpdateRepair(activeRepair.id, payload);
       setDiagVideos([]);
-      alert(
-        clean.length > 0
-          ? "Diagnóstico guardado. El vehículo pasó a 'En Diagnóstico' y la jefa ya puede armar el presupuesto."
-          : "Diagnóstico guardado (notas, fotos y videos). El vehículo pasó a 'En Diagnóstico'."
-      );
+      alert(isWarranty ? "Diagnóstico guardado. Por ser garantía, el vehículo pasó directo a su Mesa de Trabajo." : "Diagnóstico guardado. El vehículo pasó a Presupuesto y Pago.");
     } catch (err) {
       console.error(err);
       alert("Error al guardar el diagnóstico.");
@@ -258,16 +345,38 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     const statusLabels: Record<string, string> = {
       receptioned: "Cola",
       diagnosing: "Diag",
-      waiting_parts: "Repuestos",
+      quoted: "Ppto",
+      paid: "Pago",
       repairing: "Reparando",
       testing: "Pruebas",
       ready: "Listo",
       delivered: "Entregado"
     };
 
+    const statusFlow: Record<string, string> = {
+      receptioned: "diagnosing",
+      diagnosing: "quoted",
+      quoted: "paid",
+      paid: "repairing",
+      repairing: "testing",
+      testing: "ready",
+      ready: "delivered"
+    };
+    if (statusFlow[item.status] !== newStatus) {
+      alert(`No se puede saltar de "${statusLabels[item.status]}" a "${statusLabels[newStatus]}". Se debe seguir el orden: Diagnóstico → Presupuesto → Pago → Mesa de Trabajo → Control de Calidad.`);
+      return;
+    }
+
+    if (newStatus === "testing") {
+      if (!item.technicianSignature) {
+        alert("Para enviar el vehículo a Control de Calidad es obligatorio registrar el nombre y la firma del técnico responsable. Realícelo desde la Mesa de Trabajo del técnico.");
+        return;
+      }
+    }
+
     if (newStatus === "ready" || newStatus === "delivered") {
       if (item.qcReport?.result !== "approved") {
-        alert("Esta orden primero debe pasar por Control de Calidad. La jefa del local debe aprobar la revisión antes de marcarla como Lista o Entregada.");
+        alert("Esta orden primero debe pasar por Control de Calidad. La asesora de servicio debe aprobar la revisión antes de marcarla como Lista o Entregada.");
         return;
       }
       if (!item.technicianSignature) {
@@ -275,7 +384,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         return;
       }
       if (newStatus === "delivered") {
-        alert("La entrega del vehículo debe registrarse desde el panel de taller: la jefa del local entrega el vehículo y el cliente firma la conformidad. No se puede entregar directamente desde el Monitor TV.");
+        alert("La entrega del vehículo debe registrarse desde el panel de taller: la asesora de servicio entrega el vehículo y el cliente firma la conformidad. No se puede entregar directamente desde el Monitor TV.");
         return;
       }
     }
@@ -297,7 +406,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
 
   // Quick next-stage advancement helper
   const handleQuickAdvance = async (item: RepairItem) => {
-    const pipeline: RepairStatus[] = ["receptioned", "diagnosing", "waiting_parts", "repairing", "testing", "ready", "delivered"];
+    const pipeline: RepairStatus[] = ["receptioned", "diagnosing", "quoted", "paid", "repairing", "testing", "ready", "delivered"];
     const currentIndex = pipeline.indexOf(item.status);
     if (currentIndex !== -1 && currentIndex < pipeline.length - 1) {
       const nextStatus = pipeline[currentIndex + 1];
@@ -330,7 +439,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
               <span>ZONA DE TRABAJO TÉCNICO</span>
               <span className="text-[10px] uppercase font-mono bg-cyan-950 text-cyan-400 border border-cyan-800/40 px-2 py-0.5 rounded-full font-bold">Litio Energy v2.1</span>
             </h2>
-            <p className="text-xs text-slate-400 mt-0.5">Controla las colas de reparación, las fallas reportadas y la pauta de diagnóstico IA de cada vehículo.</p>
+            <p className="text-xs text-slate-400 mt-0.5">Controla la mesa de trabajo, las fallas reportadas y la pauta de diagnóstico IA de cada vehículo.</p>
           </div>
         </div>
 
@@ -363,6 +472,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       </div>
 
       {/* SELECTOR DE MODO: DIAGNSTICO (VEHCULOS QUE ACABAN DE INGRESAR) / REPARACIN (TALLER COMPLETO) */}
+      {!initialMode && (
       <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
         <button
           type="button"
@@ -380,7 +490,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
             Diagnóstico
           </span>
           <span className="text-[10px] text-slate-500 font-mono mt-0.5">
-            {repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing").length} vehículos recién ingresados
+            {repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole)).length} vehículos recién ingresados
           </span>
         </button>
 
@@ -397,13 +507,14 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
             <Wrench className="w-6 h-6" />
           </div>
           <span className={`mt-2 font-display font-black text-sm uppercase tracking-wider ${techMode === "reparacion" ? "text-blue-400" : "text-slate-300"}`}>
-            Reparación
+            Mesa de Trabajo
           </span>
           <span className="text-[10px] text-slate-500 font-mono mt-0.5">
-            {repairs.filter(r => r.status !== "receptioned" && r.status !== "diagnosing" && r.status !== "delivered").length} vehículos en taller
+            {repairs.filter(r => r.status !== "receptioned" && r.status !== "diagnosing" && r.status !== "delivered" && matchesAssignedTech(r.assignedTech, userName, userRole)).length} vehículos en taller
           </span>
         </button>
       </div>
+      )}
 
       {/* RENDER CONDICIONAL: 1. MODO TV (PANTALLA DE TELEVISOR DE TALLER) */}
       {isTvMode ? (
@@ -425,7 +536,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                   <span>LITIO ENERGY</span>
                   <span className="text-cyan-400 font-mono text-sm uppercase px-2 py-0.5 bg-slate-950 rounded-md border border-slate-800">Taller TV Monitor</span>
                 </h1>
-                <p className="text-xs text-slate-400 mt-0.5">Avance rápido táctil y visualización en tiempo real para mecánicos</p>
+                <p className="text-xs text-slate-400 mt-0.5">Solo lectura: muestra los vehículos en mesa de trabajo en tiempo real. Los estados solo los cambia el técnico desde su mesa con su firma.</p>
               </div>
             </div>
 
@@ -468,13 +579,13 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl text-center">
               <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">En Cola / Recibidos</p>
               <p className="text-2xl font-black text-slate-100 font-mono mt-1">
-                {repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length}
+                {repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && hasAssignedTech(r) && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length}
               </p>
             </div>
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl text-center">
-              <p className="text-[10px] text-cyan-400 uppercase tracking-widest font-bold">En Reparación Activa</p>
+              <p className="text-[10px] text-cyan-400 uppercase tracking-widest font-bold">En Mesa de Trabajo Activa</p>
               <p className="text-2xl font-black text-cyan-400 font-mono mt-1">
-                {repairs.filter(r => (r.status === "waiting_parts" || r.status === "repairing" || r.status === "testing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length}
+                {repairs.filter(r => (r.status === "repairing" || r.status === "testing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length}
               </p>
             </div>
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl text-center">
@@ -491,96 +602,31 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
             </div>
           </div>
 
-          {/* Grid de 3 Columnas Gigantes para Televisor */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            {/* COLUMNA 1: RECEPCIONADOS Y DIAGNSTICO */}
-            <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-850 pb-2.5">
-                <div className="flex items-center space-x-2">
-                  <span className="w-3 h-3 rounded-full bg-slate-400"></span>
-                  <h3 className="font-display font-black text-sm uppercase tracking-wider text-slate-200">1. Entrada & Diagnóstico</h3>
-                </div>
-                <span className="bg-slate-900 text-slate-400 px-2 py-0.5 rounded font-mono text-xs font-black">
-                  {repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length}
-                </span>
+{/* MONITOR TV: SOLO VEHÍCULOS EN MESA DE TRABAJO (SOLO LECTURA) */}
+          <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-850 pb-2.5">
+              <div className="flex items-center space-x-2">
+                <span className="w-3 h-3 rounded-full bg-cyan-400 animate-pulse"></span>
+                <h3 className="font-display font-black text-sm uppercase tracking-wider text-cyan-400">En Mesa de Trabajo</h3>
               </div>
-
-              <div className="space-y-4 max-h-[700px] overflow-y-auto pr-1">
-                {repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length === 0 ? (
-                  <div className="p-8 text-center text-xs text-slate-600 italic">No hay vehículos en ingreso o diagnóstico</div>
-                ) : (
-                  repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).map(item => (
-                    <TvCard 
-                      key={item.id} 
-                      item={item} 
-                      handleStatusChangeDirectly={handleStatusChangeDirectly}
-                      handleQuickAdvance={handleQuickAdvance}
-                      getVehicleIcon={getVehicleIcon}
-                    />
-                  ))
-                )}
-              </div>
+              <span className="bg-cyan-950/40 text-cyan-400 border border-cyan-900/30 px-2 py-0.5 rounded font-mono text-xs font-black">
+                {repairs.filter(r => (r.status === "repairing" || r.status === "testing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length}
+              </span>
             </div>
 
-            {/* COLUMNA 2: ESPERANDO REPUESTO / REPARACIN / PRUEBAS */}
-            <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-850 pb-2.5">
-                <div className="flex items-center space-x-2">
-                  <span className="w-3 h-3 rounded-full bg-cyan-400 animate-pulse"></span>
-                  <h3 className="font-display font-black text-sm uppercase tracking-wider text-cyan-400">2. Reparación Activa</h3>
-                </div>
-                <span className="bg-cyan-950/40 text-cyan-400 border border-cyan-900/30 px-2 py-0.5 rounded font-mono text-xs font-black">
-                  {repairs.filter(r => (r.status === "waiting_parts" || r.status === "repairing" || r.status === "testing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length}
-                </span>
-              </div>
-
-              <div className="space-y-4 max-h-[700px] overflow-y-auto pr-1">
-                {repairs.filter(r => (r.status === "waiting_parts" || r.status === "repairing" || r.status === "testing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length === 0 ? (
-                  <div className="p-8 text-center text-xs text-slate-600 italic">No hay vehículos en reparación activa en este momento</div>
-                ) : (
-                  repairs.filter(r => (r.status === "waiting_parts" || r.status === "repairing" || r.status === "testing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).map(item => (
-                    <TvCard 
-                      key={item.id} 
-                      item={item} 
-                      handleStatusChangeDirectly={handleStatusChangeDirectly}
-                      handleQuickAdvance={handleQuickAdvance}
-                      getVehicleIcon={getVehicleIcon}
-                    />
-                  ))
-                )}
-              </div>
+            <div className="space-y-4 max-h-[700px] overflow-y-auto pr-1">
+              {repairs.filter(r => (r.status === "repairing" || r.status === "testing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length === 0 ? (
+                <div className="p-8 text-center text-xs text-slate-600 italic">No hay vehículos en mesa de trabajo en este momento</div>
+              ) : (
+                repairs.filter(r => (r.status === "repairing" || r.status === "testing") && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).map(item => (
+                  <TvCard
+                    key={item.id}
+                    item={item}
+                    getVehicleIcon={getVehicleIcon}
+                  />
+                ))
+              )}
             </div>
-
-            {/* COLUMNA 3: LISTO PARA ENTREGA */}
-            <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-850 pb-2.5">
-                <div className="flex items-center space-x-2">
-                  <span className="w-3 h-3 rounded-full bg-emerald-400"></span>
-                  <h3 className="font-display font-black text-sm uppercase tracking-wider text-emerald-400">3. Listos Para Entrega</h3>
-                </div>
-                <span className="bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 px-2 py-0.5 rounded font-mono text-xs font-black">
-                  {repairs.filter(r => r.status === "ready" && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length}
-                </span>
-              </div>
-
-              <div className="space-y-4 max-h-[700px] overflow-y-auto pr-1">
-                {repairs.filter(r => r.status === "ready" && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).length === 0 ? (
-                  <div className="p-8 text-center text-xs text-slate-600 italic">No hay vehículos listos para retiro</div>
-                ) : (
-                  repairs.filter(r => r.status === "ready" && (tvFilterBranch === "all" || r.workshopBranch === tvFilterBranch)).map(item => (
-                    <TvCard 
-                      key={item.id} 
-                      item={item} 
-                      handleStatusChangeDirectly={handleStatusChangeDirectly}
-                      handleQuickAdvance={handleQuickAdvance}
-                      getVehicleIcon={getVehicleIcon}
-                    />
-                  ))
-                )}
-              </div>
-            </div>
-
           </div>
         </div>
       ) : techMode === "diagnostico" ? (
@@ -597,17 +643,17 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                   <h3 className="font-display font-bold text-sm uppercase tracking-wider text-slate-300">Vehículos por Diagnosticar</h3>
                 </div>
                 <span className="text-xs bg-cyan-950 text-cyan-400 px-2.5 py-1 rounded-full font-mono font-bold border border-cyan-800/40">
-                  {repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing").length}
+                  {repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole)).length}
                 </span>
               </div>
 
               <div className="space-y-3 max-h-[700px] overflow-y-auto pr-1">
-                {repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing").length === 0 ? (
+                {repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole)).length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-600 italic">
                     No hay vehículos recién ingresados. En cuanto la recepción registre un vehículo, aparecerá automáticamente aquí.
                   </div>
                 ) : (
-                  repairs.filter(r => r.status === "receptioned" || r.status === "diagnosing").map(rep => {
+                  repairs.filter(r => (r.status === "receptioned" || r.status === "diagnosing") && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole)).map(rep => {
                     const isSelected = rep.id === selectedId;
                     const isDiagnosing = rep.status === "diagnosing";
                     return (
@@ -641,6 +687,11 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                               {(rep.spareParts?.length || 0) > 0 && (
                                 <span className="text-[9px] bg-amber-950 text-amber-400 px-1.5 py-0.2 rounded font-mono font-bold uppercase">
                                   {rep.spareParts!.length} repuestos
+                                </span>
+                              )}
+                              {rep.scheduledDeadline && new Date(rep.scheduledDeadline).getTime() < Date.now() && (
+                                <span className="text-[9px] bg-red-950 text-red-400 px-1.5 py-0.2 rounded font-mono font-bold uppercase animate-pulse">
+                                  ⏰ Tiempo vencido
                                 </span>
                               )}
                             </div>
@@ -712,11 +763,10 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div className="space-y-1.5">
                         <p className="text-slate-300"><strong>Cliente:</strong> <span className="text-white font-bold">{activeRepair.client.name}</span></p>
-                        <p className="text-slate-300"><strong>Teléfono:</strong> {activeRepair.client.phone}</p>
                         <p className="text-slate-300"><strong>Tipo de Vehículo:</strong> {activeRepair.vehicle.type.toUpperCase()}</p>
                         <p className="text-slate-300"><strong>Marca / Modelo:</strong> {activeRepair.vehicle.brand} {activeRepair.vehicle.model}</p>
                         <p className="text-slate-300"><strong>Voltaje:</strong> {activeRepair.vehicle.voltage}</p>
-                        <p className="text-slate-300"><strong>Vida útil Batería:</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>
+                        <p className="text-slate-300"><strong>Tiempo de Uso de la Batería:</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>
                       </div>
                       <div className="space-y-1.5">
                         <p className="text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "Arenales (San Isidro)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
@@ -743,6 +793,55 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                       "{activeRepair.vehicle.reportedFailure}"
                     </p>
                   </div>
+
+                  {/* EVIDENCIA REGISTRADA EN RECEPCION (SOLO VISUALIZACION) */}
+                  {(activeRepair.visualState.photos?.length || activeRepair.visualState.videoEvidence?.length) ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <h3 className="font-bold text-sm text-slate-100 uppercase tracking-wider font-display flex items-center space-x-2">
+                          <ClipboardCheck className="w-4 h-4 text-cyan-400" />
+                          <span>Evidencia Registrada en Recepción</span>
+                        </h3>
+                        <span className="text-[10px] text-slate-500">Fotos y videos del estado de ingreso</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {(activeRepair.visualState.photos || []).map((ph, idx) => (
+                          <button
+                            key={`rp${idx}`}
+                            type="button"
+                            onClick={() => setReceptionProof({ type: "photo", src: ph, label: `Foto de recepción ${idx + 1}` })}
+                            className="block w-16 h-16 rounded-lg overflow-hidden border border-slate-800 bg-slate-900 group"
+                            title="Ver foto de recepción"
+                          >
+                            <img src={ph} alt={`Recepción ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                          </button>
+                        ))}
+                        {(activeRepair.visualState.videoEvidence || []).map((ve, idx) => (
+                          <button
+                            key={`rv${idx}`}
+                            type="button"
+                            onClick={() => setReceptionProof({ type: "video", src: ve.url, label: `Video de recepción ${idx + 1}` })}
+                            className="w-16 h-16 rounded-lg border border-cyan-500/30 bg-slate-900 flex flex-col items-center justify-center text-center text-cyan-400 hover:bg-slate-800 transition-colors"
+                            title="Ver video de recepción"
+                          >
+                            <span className="text-lg">▶️</span>
+                            <span className="text-[8px] font-mono mt-0.5">{Math.round(ve.durationSec)}s</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <h3 className="font-bold text-sm text-slate-100 uppercase tracking-wider font-display flex items-center space-x-2">
+                          <ClipboardCheck className="w-4 h-4 text-cyan-400" />
+                          <span>Evidencia Registrada en Recepción</span>
+                        </h3>
+                        <span className="text-[10px] text-slate-500">Fotos y videos del estado de ingreso</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500">No se registraron fotos ni videos al momento de la recepción.</p>
+                    </div>
+                  )}
 
                   {/* FOTOS Y VIDEOS DEL DIAGNOSTICO (BOTONES ACTIVADOS) */}
                   <div className="space-y-4">
@@ -809,7 +908,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         <span>Repuestos / Trabajos que necesita el vehículo</span>
                       </label>
                       <span className="text-[10px] text-slate-500">
-                        La jefa del local colocará el precio
+                        La asesora de servicio colocará el precio
                       </span>
                     </div>
 
@@ -818,8 +917,8 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         {spareParts.map((p) => (
                           <li key={p.id} className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
                             <div className="flex items-center space-x-2 min-w-0">
-                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide shrink-0 ${p.type === "cambio" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : "bg-blue-500/15 text-blue-400 border border-blue-500/25"}`}>
-                                {p.type === "cambio" ? "Cambiar" : "Reparar"}
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide shrink-0 ${p.type === "cambio" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : p.type === "mantenimiento" ? "bg-violet-500/15 text-violet-400 border border-violet-500/25" : "bg-blue-500/15 text-blue-400 border border-blue-500/25"}`}>
+                                {p.type === "cambio" ? "Cambiar" : p.type === "mantenimiento" ? "Mant." : "Reparar"}
                               </span>
                               <span className="text-slate-100 font-medium truncate">{p.description}</span>
                             </div>
@@ -852,6 +951,13 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         >
                           Reparar
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewPartType("mantenimiento")}
+                          className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "mantenimiento" ? "bg-violet-500/20 border-violet-500/40 text-violet-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
+                        >
+                          Mant.
+                        </button>
                       </div>
                       <div className="flex-1 flex gap-2">
                         <input
@@ -878,18 +984,53 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                   {/* OBSERVACION DEL TECNICO PARA CUALQUIER CAMBIO */}
                   <div>
                     <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
-                      Observación del técnico para el cambio o trabajo
+                      Observación del técnico
                     </label>
                     <textarea
                       rows={3}
                       value={techNotes}
                       onChange={e => setTechNotes(e.target.value)}
-                      placeholder="Describe tu observación técnica: causa probable, piezas a considerar, recomendaciones..."
+                      placeholder=""
                       className="w-full px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-950 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-xs transition-all font-mono"
                     />
                   </div>
 
                   {/* ACCIONES DEL DIAGNOSTICO */}
+                  {activeRepair.serviceType === "garantia" && (
+                    <div className="pt-2 border-t border-slate-850">
+                      <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                        ¿El daño está cubierto por la garantía?
+                      </label>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setDiagWarranty(true)}
+                          className={`flex-1 px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider border transition-all ${
+                            diagWarranty
+                              ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300"
+                              : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"
+                          }`}
+                        >
+                          Garantía · Sí
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDiagWarranty(false)}
+                          className={`flex-1 px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider border transition-all ${
+                            !diagWarranty
+                              ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                              : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"
+                          }`}
+                        >
+                          Garantía · No
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-1.5">
+                        Sí: pasa directo a Mesa de Trabajo · No: registra los repuestos y pasará a Presupuesto y Pago
+                      </p>
+                    </div>
+                  )}
+
                   <div className="flex flex-col sm:flex-row gap-3 pt-2">
                     <button
                       type="button"
@@ -897,7 +1038,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                       disabled={isLoading}
                       className="flex-1 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs uppercase tracking-wider px-5 py-3 rounded-xl transition-all shadow-md"
                     >
-                      Guardar Diagnóstico y Pasar a Reparación
+                      Guardar Diagnóstico
                     </button>
                   </div>
                 </div>
@@ -915,7 +1056,8 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
             )}
           </div>
         </div>
-      ) : (
+            ) : (
+
         
         // RENDER 2: VISTA NORMAL (ESTACIN DE TRABAJO COMPLETA)
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start animate-fade-in">
@@ -926,13 +1068,13 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
               <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
                 <h3 className="font-display font-bold text-sm uppercase tracking-wider text-slate-300">Cola de Trabajo de Taller</h3>
                 <span className="text-xs bg-slate-800 text-slate-400 px-2.5 py-1 rounded-full font-mono font-bold">
-                  {repairs.filter(r => r.status !== "delivered").length} Activos
+                  {repairs.filter(r => r.status !== "delivered" && matchesAssignedTech(r.assignedTech, userName, userRole)).length} Activos
                 </span>
               </div>
 
               <div className="space-y-6 max-h-[660px] overflow-y-auto pr-1">
-                {STATUS_COLUMNS.map(col => {
-                  const columnRepairs = repairs.filter(r => r.status === col.id);
+                {STATUS_COLUMNS.filter(col => techMode === "reparacion" ? (col.id === "repairing") : col.id !== "testing").map(col => {
+                  const columnRepairs = repairs.filter(r => r.status === col.id && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole));
                   return (
                     <div key={col.id} className="space-y-2">
                       <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider py-1.5 px-2.5 rounded-xl bg-slate-950/60 border border-slate-850">
@@ -947,23 +1089,18 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                           columnRepairs.map(rep => {
                             const isSelected = rep.id === selectedId;
                             
-                            // Branch tag translation
-                            const serviceLabels: Record<string, string> = {
-                              mantenimiento: "Manto",
-                              diagnostico: "Diag",
-                              garantia: "Gara",
-                              cambio: "Cambio",
-                              express: "Express"
-                            };
+                            const statusShortLabels = STATUS_SHORT_LABELS;
 
                             return (
                               <div
                                 key={rep.id}
-                                onClick={() => setSelectedId(rep.id)}
-                                className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                                onClick={() => {
+                                  setSelectedId(rep.id);
+                                }}
+                                className={`p-3.5 rounded-xl border transition-all ${
                                   isSelected
-                                    ? "bg-slate-800/80 border-cyan-500/80 shadow-[0_0_12px_rgba(6,182,212,0.15)] text-white"
-                                    : "bg-slate-900/40 border-slate-800/80 text-slate-400 hover:bg-slate-800/30 hover:text-slate-300"
+                                    ? "bg-slate-800/80 border-cyan-500/80 shadow-[0_0_12px_rgba(6,182,212,0.15)] text-white cursor-pointer"
+                                    : "bg-slate-900/40 border-slate-800/80 text-slate-400 hover:bg-slate-800/30 hover:text-slate-300 cursor-pointer"
                                 }`}
                               >
                                 <div className="flex justify-between items-start">
@@ -984,7 +1121,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                                         x {BRANCH_SHORT_LABELS[rep.workshopBranch || "lince_arenales"] || "Lince"}
                                       </span>
                                       <span className="text-[9px] bg-slate-950 text-cyan-400/80 px-1.5 py-0.2 rounded font-mono font-bold uppercase">
-                                        x {serviceLabels[rep.serviceType || "diagnostico"] || "Diag"}
+                                        x {statusShortLabels[rep.status] || "?"}
                                       </span>
                                       {rep.serviceAuthorized && (
                                         <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.2 rounded font-mono font-black uppercase border border-emerald-500/40">
@@ -1063,7 +1200,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                       </span>
                     </div>
                     <span className="text-emerald-200/90 text-xs font-bold hidden sm:block">
-                      Proceda con la reparación
+                      Proceda con el trabajo en mesa
                     </span>
                   </div>
                 )}
@@ -1079,10 +1216,10 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         <span>Ficha de Recepción</span>
                       </h4>
                       <p className="mb-1 text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "Arenales (San Isidro)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
-                      <p className="mb-1 text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{activeRepair.serviceType === "mantenimiento" ? "Mantenimiento" : activeRepair.serviceType === "diagnostico" ? "Diagnóstico" : activeRepair.serviceType === "garantia" ? "Garantía" : activeRepair.serviceType === "cambio" ? "Cambio de Repuesto" : activeRepair.serviceType === "express" ? "Servicio Express" : "Diagnóstico"}</span> {activeRepair.serviceTypeDetail && `(${activeRepair.serviceTypeDetail})`}</p>
+                      <p className="mb-1 text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{STATUS_SHORT_LABELS[activeRepair.status] || activeRepair.status}</span></p>
                       <p className="mb-1 text-slate-300"><strong>Tipo de Vehículo:</strong> {activeRepair.vehicle.type.toUpperCase()}</p>
                       <p className="mb-1 text-slate-300"><strong>Voltaje:</strong> {activeRepair.vehicle.voltage}</p>
-                      <p className="mb-1 text-slate-300"><strong>Vida útil de la Batería:</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>
+                      <p className="mb-1 text-slate-300"><strong>Tiempo de Uso de la Batería:</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>
                       <p className="mb-1 text-slate-300">
                         <strong>Falla Reportada:</strong> <span className="italic text-slate-400 font-medium">"{activeRepair.vehicle.reportedFailure}"</span>
                       </p>
@@ -1259,25 +1396,94 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                   )}
 
 
+                  {/* EVIDENCIA DE MESA DE TRABAJO: FOTOS Y VIDEOS DEL TRABAJO REALIZADO */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <h3 className="font-bold text-sm text-slate-100 uppercase tracking-wider font-display flex items-center space-x-2">
+                        <Camera className="w-4 h-4 text-blue-400" />
+                        <span>Evidencia de Mesa de Trabajo</span>
+                      </h3>
+                      <span className="text-[10px] text-slate-500">Fotos y videos del trabajo realizado</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <PhotoManager
+                        photos={mesaPhotos}
+                        onPhotosChange={setMesaPhotos}
+                        title="Fotos de Mesa de Trabajo"
+                        subtitle="Captura las fotos del trabajo, repuestos instalados y estado final del vehículo."
+                        storageBadge="MEMORIA MESA"
+                      />
+
+                      <div className="space-y-3">
+                        <VideoRecorder
+                          onRecorded={(v) => setMesaVideos(prev => [...prev, v])}
+                          branchLabel={BRANCH_SHORT_LABELS[activeRepair.workshopBranch] || "Taller"}
+                        />
+
+                        {mesaVideos.length > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] uppercase font-black text-slate-500 tracking-wider">
+                              Videos de mesa pendientes ({mesaVideos.length})
+                            </p>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                              {mesaVideos.map((v, idx) => (
+                                <div
+                                  key={idx}
+                                  className="relative flex flex-col items-center justify-center gap-1 rounded-lg border border-blue-800/40 bg-slate-950 p-3 text-center"
+                                >
+                                  <Video className="w-5 h-5 text-blue-400" />
+                                  <span className="text-[9px] font-mono text-slate-400">
+                                    {v.durationSec}s  {(v.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setMesaVideos(prev => prev.filter((_, i) => i !== idx))}
+                                    className="absolute top-1 right-1 p-1 bg-slate-950/80 border border-slate-800 text-rose-400 hover:text-rose-300 rounded-md"
+                                    title="Quitar video"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {mesaPhotos.length > 0 && (
+                      <div>
+                        <p className="text-[10px] uppercase font-black text-slate-500 tracking-wider mb-1.5">
+                          Fotos de mesa pendientes de guardar ({mesaPhotos.length})
+                        </p>
+                        <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                          {mesaPhotos.map((url, idx) => (
+                            <div key={idx} className="relative rounded-lg overflow-hidden border border-slate-800 bg-slate-900 group">
+                              <img src={url} alt={`Mesa ${idx + 1}`} className="w-full h-16 object-cover" />
+                              <button
+                                type="button"
+                                onClick={() => setMesaPhotos(prev => prev.filter((_, i) => i !== idx))}
+                                className="absolute top-1 right-1 p-1 bg-slate-950/80 border border-slate-800 text-rose-400 hover:text-rose-300 rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Quitar foto"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+
                   {/* 3. Acción y Trabajo del Técnico (Notas y Costo Real) */}
                   <div className="space-y-4">
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                      <h3 className="font-bold text-sm text-slate-100 uppercase tracking-wider font-display">Bitácora Técnica de Reparación</h3>
+                      <h3 className="font-bold text-sm text-slate-100 uppercase tracking-wider font-display">Bitácora Técnica de Mesa de Trabajo</h3>
                       <span className="text-[10px] text-slate-500">Operando como: Téc. {technicianName.trim() || ""}</span>
                     </div>
 
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Comentarios y Diagnóstico del Mecánico</label>
-                      <textarea
-                        rows={3}
-                        value={techNotes}
-                        onChange={e => setTechNotes(e.target.value)}
-                        placeholder="Escribe aquí los avances: Ej. Se desarma el motor y se detectan cables de fase fundidos, se procede a re-aislar y soldar conectores..."
-                        className="w-full px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-950 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-xs transition-all font-mono"
-                      />
-                    </div>
-
-                    {/* Repuestos y trabajos detectados por el técnico */}
                     <div className="pt-2 border-t border-slate-850 text-xs">
                       <div className="flex items-center justify-between mb-2">
                         <label className="flex items-center space-x-1.5 text-xs font-semibold text-slate-300 uppercase tracking-wider">
@@ -1285,7 +1491,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                           <span>Repuestos / Trabajos que necesita el vehículo</span>
                         </label>
                         <span className="text-[10px] text-slate-500">
-                          La jefa del local colocará el precio de repuesto y mano de obra
+                          La asesora de servicio colocará el precio de repuesto y mano de obra
                         </span>
                       </div>
 
@@ -1294,63 +1500,74 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                           {spareParts.map((p) => (
                             <li key={p.id} className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
                               <div className="flex items-center space-x-2 min-w-0">
-                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide shrink-0 ${p.type === "cambio" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : "bg-blue-500/15 text-blue-400 border border-blue-500/25"}`}>
-                                  {p.type === "cambio" ? "Cambiar" : "Reparar"}
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide shrink-0 ${p.type === "cambio" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : p.type === "mantenimiento" ? "bg-violet-500/15 text-violet-400 border border-violet-500/25" : "bg-blue-500/15 text-blue-400 border border-blue-500/25"}`}>
+                                  {p.type === "cambio" ? "Cambiar" : p.type === "mantenimiento" ? "Mant." : "Reparar"}
                                 </span>
                                 <span className="text-slate-100 font-medium truncate">{p.description}</span>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => removeSparePart(p.id)}
-                                className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 rounded transition-colors shrink-0"
-                                title="Quitar"
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
+                               {techMode !== "reparacion" && activeRepair.status !== "repairing" && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeSparePart(p.id)}
+                                   className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 rounded transition-colors shrink-0"
+                                  title="Quitar"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
                             </li>
                           ))}
                         </ul>
                       )}
 
-                      <div className="flex flex-col sm:flex-row gap-2">
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => setNewPartType("cambio")}
-                            className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "cambio" ? "bg-amber-500/20 border-amber-500/40 text-amber-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
-                          >
-                            Cambiar
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setNewPartType("reparacion")}
-                            className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "reparacion" ? "bg-blue-500/20 border-blue-500/40 text-blue-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
-                          >
-                            Reparar
-                          </button>
+                      {techMode !== "reparacion" && activeRepair.status !== "repairing" && (
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setNewPartType("cambio")}
+                              className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "cambio" ? "bg-amber-500/20 border-amber-500/40 text-amber-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
+                            >
+                              Cambiar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setNewPartType("reparacion")}
+                              className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "reparacion" ? "bg-blue-500/20 border-blue-500/40 text-blue-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
+                            >
+                              Reparar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setNewPartType("mantenimiento")}
+                              className={`px-2.5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-colors ${newPartType === "mantenimiento" ? "bg-violet-500/20 border-violet-500/40 text-violet-300" : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"}`}
+                            >
+                              Mant.
+                            </button>
+                          </div>
+                          <div className="flex-1 flex gap-2">
+                            <input
+                              type="text"
+                              value={newPartDesc}
+                              onChange={e => setNewPartDesc(e.target.value)}
+                              onKeyDown={e => { if (e.key === "Enter") addSparePart(); }}
+                              placeholder="Ej. Cambio de acelerador, purgado, cambio de llantas..."
+                              className="flex-1 px-3 py-2 rounded-lg border border-slate-800 bg-slate-950 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 text-xs"
+                            />
+                            <button
+                              type="button"
+                              onClick={addSparePart}
+                              disabled={!newPartDesc.trim()}
+                              className="px-3 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/25 rounded-lg font-bold text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>Agregar</span>
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex-1 flex gap-2">
-                          <input
-                            type="text"
-                            value={newPartDesc}
-                            onChange={e => setNewPartDesc(e.target.value)}
-                            onKeyDown={e => { if (e.key === "Enter") addSparePart(); }}
-                            placeholder="Ej. Cambio de acelerador, purgado, cambio de llantas..."
-                            className="flex-1 px-3 py-2 rounded-lg border border-slate-800 bg-slate-950 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 text-xs"
-                          />
-                          <button
-                            type="button"
-                            onClick={addSparePart}
-                            disabled={!newPartDesc.trim()}
-                            className="px-3 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/25 rounded-lg font-bold text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center space-x-1"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                            <span>Agregar</span>
-                          </button>
-                        </div>
-                      </div>
+                      )}
 
-                      {spareParts.length > 0 && (
+{techMode !== "reparacion" && spareParts.length > 0 && (
                         <div className="flex justify-end pt-2">
                           <button
                             type="button"
@@ -1402,52 +1619,67 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         </div>
                       </div>
                     </div>
+<div>
+                      <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                        Comentario del Técnico
+                      </label>
+                      <textarea
+                        rows={3}
+                        value={techNotes}
+                        onChange={e => setTechNotes(e.target.value)}
+                        placeholder="Escribe aquí cualquier observación o comentario de tu trabajo..."
+                        className="w-full px-3.5 py-2 rounded-xl border border-slate-800 bg-slate-950 text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-xs transition-all font-mono"
+                      />
+                    </div>
 
                     <div className="flex justify-end pt-2">
                       <button
                         type="button"
                         onClick={handleSaveNotes}
-                        disabled={isLoading}
-                        className="bg-slate-950 hover:bg-slate-900 text-cyan-400 border border-cyan-500/30 hover:border-cyan-400 font-bold text-xs px-5 py-2.5 rounded-xl transition-all shadow-sm"
-                      >                        Guardar Cambios
+                        disabled={isLoading || activeRepair.status === "testing"}
+                        className={`font-bold text-xs px-5 py-2.5 rounded-xl transition-all shadow-sm ${
+                          activeRepair.status === "testing"
+                            ? "bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed"
+                            : "bg-slate-950 hover:bg-slate-900 text-cyan-400 border border-cyan-500/30 hover:border-cyan-400"
+                        }`}
+                      >
+                        {activeRepair.status === "testing" ? "Trabajo Finalizado" : "Guardar Cambios"}
                       </button>
                     </div>
                   </div>
 
 
-                  {/* 4. Operaciones de Estado en Taller (Botones Grandes) */}
-                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 space-y-3">
-                    <span className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                      Cambiar Estado Operativo del Equipo
-                    </span>
-                    
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                      {[
-                        { status: "diagnosing", label: "En Diagnóstico", color: "bg-cyan-950 hover:bg-cyan-900/40 text-cyan-400 border border-cyan-500/20", activeStatus: "diagnosing" },
-                        { status: "waiting_parts", label: "Esperando Repuestos", color: "bg-amber-950 hover:bg-amber-900/40 text-amber-400 border border-amber-500/20", activeStatus: "waiting_parts" },
-                        { status: "repairing", label: "En Reparación", color: "bg-blue-950 hover:bg-blue-900/40 text-blue-400 border border-blue-500/20", activeStatus: "repairing" },
-                        { status: "testing", label: "En Pruebas", color: "bg-purple-950 hover:bg-purple-900/40 text-purple-400 border border-purple-500/20", activeStatus: "testing" },
-                        { status: "ready", label: "Listo para Entrega", color: "bg-emerald-950 hover:bg-emerald-900/40 text-emerald-400 border border-emerald-500/20", activeStatus: "ready" }
-                      ].map(btn => {
-                        const isCurrent = activeRepair.status === btn.activeStatus;
-                        return (
-                          <button
-                            type="button"
-                            key={btn.status}
-                            onClick={() => handleUpdateStatus(btn.status as RepairStatus)}
-                            disabled={isLoading}
-                            className={`py-2.5 px-1 text-center rounded-xl font-bold text-xs transition-all ${
-                              isCurrent 
-                                ? "bg-cyan-500 text-slate-950 font-black shadow-[0_0_15px_rgba(6,182,212,0.3)] border border-cyan-400" 
-                                : btn.color
-                            }`}
-                          >
-                            {btn.label}
-                            {isCurrent && " S"}
-                          </button>
-                        );
-                      })}
+{/* 4. Acción principal según estado */}
+                  {activeRepair.status === "testing" ? (
+                    <div className="bg-purple-950/20 border border-purple-500/30 rounded-xl p-4 text-center space-y-2">
+                      <span className="text-purple-400 font-display font-black text-sm uppercase tracking-wide">
+                        🔒 En Control de Calidad
+                      </span>
+                      <p className="text-xs text-purple-300/70">El vehículo está en revisión de Control de Calidad. Solo la asesora de servicio puede devolverlo a mesa de trabajo si no pasa la revisión.</p>
                     </div>
+                  ) : activeRepair.status === "repairing" ? (
+                    <div className="space-y-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!technicianName || !technicianName.trim()) {
+                              alert("Debes ingresar el nombre del técnico responsable antes de enviar a Control de Calidad.");
+                              return;
+                            }
+                            if (!techSignature) {
+                              alert("Debes registrar tu firma técnica antes de enviar a Control de Calidad.");
+                              return;
+                            }
+                            handleUpdateStatus("testing");
+                          }}
+                          disabled={isLoading}
+                          className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm uppercase tracking-wider px-5 py-4 rounded-xl transition-all shadow-[0_0_20px_rgba(16,185,129,0.3)] flex items-center justify-center space-x-2"
+                        >
+                          <Check className="w-5 h-5" />
+                          <span>Trabajo en Mesa Culminado — Enviar a Control de Calidad</span>
+                        </button>
+                      </div>
+                    ) : null}
 
                     {activeRepair.status === "ready" && (
                       <div className="pt-2 space-y-2">
@@ -1472,16 +1704,15 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                               className="w-full bg-slate-950 hover:bg-slate-900 text-cyan-400 border border-cyan-500/35 py-3 px-4 rounded-xl font-black text-xs uppercase tracking-wider shadow-[0_0_15px_rgba(6,182,212,0.15)] transition-all flex items-center justify-center space-x-2"
                             >
                               <Sparkles className="w-4.5 h-4.5 text-cyan-400 animate-pulse" />
-                              <span>Pasa a Control de Calidad (Revisa la Jefa del Local)</span>
+                              <span>Pasa a Control de Calidad (Revisa la Asesora de Servicio)</span>
                             </button>
                             <p className="text-[10px] text-amber-400/90 text-center">
-                              La jefa de {BRANCH_SHORT_LABELS[activeRepair.workshopBranch] || "tu local"} revisará el vehículo y lo aprobará para entrega.
+                              La asesora de {BRANCH_SHORT_LABELS[activeRepair.workshopBranch] || "tu local"} revisará el vehículo y lo aprobará para entrega.
                             </p>
                           </>
                         )}
                       </div>
                     )}
-                  </div>
 
 
                   {/* 5. Historial y Línea de Tiempo (Logs) */}
@@ -1639,6 +1870,28 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         </div>
       )}
 
+      {/* Lightbox de evidencia registrada en recepción */}
+      {receptionProof && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/95 p-4" onClick={() => setReceptionProof(null)}>
+          <div className="relative w-full max-w-4xl" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setReceptionProof(null)}
+              className="absolute -top-10 right-0 text-slate-400 hover:text-white text-sm font-bold px-3 py-1"
+            >
+              ✕ Cerrar
+            </button>
+            {receptionProof.label && (
+              <p className="text-center text-xs text-slate-400 font-mono mb-2">{receptionProof.label}</p>
+            )}
+            {receptionProof.type === "photo" ? (
+              <img src={receptionProof.src} alt={receptionProof.label} className="w-full max-h-[85vh] object-contain rounded-xl border border-slate-800 bg-black" />
+            ) : (
+              <video src={receptionProof.src} controls autoPlay className="w-full max-h-[85vh] rounded-xl border border-slate-800 bg-black" />
+            )}
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1646,20 +1899,16 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
 // SUBCOMPONENTE DE TARJETA OPTIMIZADA PARA TELEVISIN (TV CARD)
 function TvCard({ 
   item, 
-  handleStatusChangeDirectly, 
-  handleQuickAdvance, 
   getVehicleIcon 
 }: { 
   item: RepairItem; 
-  handleStatusChangeDirectly: (item: RepairItem, newStatus: RepairStatus) => Promise<void>;
-  handleQuickAdvance: (item: RepairItem) => Promise<void>;
   getVehicleIcon: (type: string) => string;
   key?: string | number | null;
 }) {
-  const pipeline: RepairStatus[] = ["receptioned", "diagnosing", "waiting_parts", "repairing", "testing", "ready"];
+  const pipeline: RepairStatus[] = ["receptioned", "diagnosing", "quoted", "paid", "repairing", "testing", "ready"];
   const currentStepIndex = pipeline.indexOf(item.status);
 
-  const stepShortLabels = ["Cola", "Diag", "Repu", "Repa", "Prue", "Listo"];
+  const stepShortLabels = ["Cola", "Diag", "Ppto", "Pago", "Repa", "Prue", "Listo"];
 
   // Sede label and color
   const branchNames: Record<string, string> = {
@@ -1740,20 +1989,57 @@ function TvCard({
         </p>
       </div>
 
-      {/* LINEA DE TIEMPO INTERACTIVA / CAMBIO DE ESTADO EN 1 TAP */}
+      {/* Trabajo a realizar (repuestos/trabajos del técnico) */}
+      <div className="bg-slate-950 p-3 rounded-lg border border-cyan-500/20">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[10px] uppercase font-black tracking-widest text-cyan-400">Trabajo a realizar</p>
+          <span className="text-[10px] font-black text-cyan-300 bg-cyan-950 border border-cyan-800/40 px-2 py-0.5 rounded-full">
+            {(item.spareParts || []).length} trabajo(s)
+          </span>
+        </div>
+        {(item.spareParts || []).length === 0 ? (
+          <p className="text-xs text-slate-500 font-medium">
+            Sin trabajos/repuestos registrados para este vehículo.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {item.spareParts.map((p) => {
+              const typeInfo =
+                p.type === "cambio"
+                  ? { l: "Cambio", c: "text-cyan-300 bg-cyan-950 border-cyan-800/40" }
+                  : p.type === "reparacion"
+                  ? { l: "Reparación", c: "text-amber-300 bg-amber-950 border-amber-800/40" }
+                  : { l: "Mantenimiento", c: "text-emerald-300 bg-emerald-950 border-emerald-800/40" };
+              return (
+                <div key={p.id} className="flex items-center justify-between gap-2">
+                  <span className="flex items-center space-x-2 min-w-0">
+                    <Check className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span className="text-sm text-slate-100 font-bold uppercase truncate">{p.description}</span>
+                  </span>
+                  <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border shrink-0 ${typeInfo.c}`}>
+                    {typeInfo.l}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* LINEA DE TIEMPO DEL PROCESO (SOLO LECTURA EN MONITOR TV) */}
       <div className="pt-2 border-t border-slate-800/50 space-y-2">
-        <p className="text-[9px] uppercase tracking-wider font-bold text-slate-500">Avance rápido del proceso de taller:</p>
-        
-        <div className="grid grid-cols-6 gap-1 relative">
+        <p className="text-[9px] uppercase tracking-wider font-bold text-slate-500">Proceso actual del vehículo (solo lectura — los cambios solo los realiza el técnico desde su mesa con su firma):</p>
+
+        <div className="grid grid-cols-8 gap-1">
           {pipeline.map((stepStatus, idx) => {
             const isPassed = idx <= currentStepIndex;
             const isCurrent = idx === currentStepIndex;
             const qcApproved = item.qcReport?.result === "approved";
             const isLocked = (stepStatus === "ready" || stepStatus === "delivered") && !qcApproved;
-            
-            let stepStyle = "bg-slate-950 text-slate-500 border-slate-800 hover:bg-slate-800";
+
+            let stepStyle = "bg-slate-950 text-slate-500 border-slate-800";
             if (isLocked) {
-              stepStyle = "bg-slate-950 text-slate-600 border-slate-800 opacity-40 cursor-not-allowed";
+              stepStyle = "bg-slate-950 text-slate-600 border-slate-800 opacity-40";
             } else if (isCurrent) {
               stepStyle = "bg-cyan-500 text-slate-950 font-black border-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.4)]";
             } else if (isPassed) {
@@ -1761,42 +2047,17 @@ function TvCard({
             }
 
             return (
-              <button
-                type="button"
+              <span
                 key={stepStatus}
-                disabled={isLocked}
-                onClick={() => !isLocked && handleStatusChangeDirectly(item, stepStatus as RepairStatus)}
-                className={`py-1.5 px-0.5 text-center text-[10px] font-bold rounded border transition-all ${stepStyle}`}
-                title={isLocked ? "Requiere Control de Calidad" : `Cambiar a ${stepShortLabels[idx]}`}
+                className={`py-1.5 px-0.5 text-center text-[10px] font-bold rounded border ${stepStyle}`}
+                title={isCurrent ? `${stepShortLabels[idx]} (etapa actual)` : stepShortLabels[idx]}
               >
                 {isLocked ? "\uD83D\uDD12 " : ""}{stepShortLabels[idx]}
-              </button>
+              </span>
             );
           })}
         </div>
       </div>
-
-      {/* BOTN FÁCIL: SIGUIENTE PASO ~ */}
-      {item.status !== "ready" && (
-        <div className="pt-1">
-          <button
-            type="button"
-            onClick={() => handleQuickAdvance(item)}
-            className="w-full bg-slate-950 hover:bg-slate-800 border border-cyan-500/20 hover:border-cyan-400 text-cyan-400 font-bold text-xs py-2 px-3 rounded-lg flex items-center justify-center space-x-1.5 transition-all group-hover:scale-[1.005]"
-          >
-            <ArrowRight className="w-3.5 h-3.5" />
-            <span>
-              Avanzar a: <strong>{
-                item.status === "receptioned" ? "Diagnóstico" :
-                item.status === "diagnosing" ? "Espera Repuesto" :
-                item.status === "waiting_parts" ? "En Reparación" :
-                item.status === "repairing" ? "En Pruebas" :
-                item.status === "testing" ? "Listo para Retiro" : "Listo"
-              }</strong>
-            </span>
-          </button>
-        </div>
-      )}
     </div>
   );
 }

@@ -32,3 +32,34 @@ body {
 .glow-cyan {
   box-shadow: 0 0 20px rgba(6, 182, 212, 0.3);
 }
+
+/* Impresión del panel de reportes: solo muestra el área del reporte en blanco */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #reporte-print, #reporte-print * {
+    visibility: visible;
+  }
+  #reporte-print {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    max-width: 100%;
+    padding: 0;
+  }
+  #reporte-print .print\:hidden {
+    display: none !important;
+  }
+  #reporte-print table {
+    color: #0f172a !important;
+  }
+  #reporte-print td, #reporte-print th {
+    border-color: #cbd5e1 !important;
+    color: #0f172a !important;
+  }
+}

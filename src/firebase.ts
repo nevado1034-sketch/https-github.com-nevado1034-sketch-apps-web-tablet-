@@ -17,7 +17,9 @@ import {
   serverTimestamp,
   deleteDoc,
   limit,
-  Timestamp
+  Timestamp,
+  increment,
+  runTransaction
 } from "firebase/firestore";
 
 const metaEnv = (import.meta as any).env || {};
@@ -84,5 +86,7 @@ export {
   serverTimestamp,
   limit,
   Timestamp,
-  deleteDoc
+  deleteDoc,
+  increment,
+  runTransaction
 };

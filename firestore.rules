@@ -5,32 +5,49 @@ service cloud.firestore {
       return localKey in ['lince_arenales', 'surco', 'san_borja', 'lince_leal'];
     }
 
-    // Repairs collection (tablet + server)
+    // ══════════════════════════════════════════════════════════════════════
+    // REPAIRS: la tablet escribe sin autenticación (flujo tablet→Firestore)
+    // ══════════════════════════════════════════════════════════════════════
     match /repairs/{repairId} {
       allow read, write: if true;
     }
 
-    // Canonical clients (Android app + espejo). Se mantiene permisivo por compatibilidad con Android.
+    // ══════════════════════════════════════════════════════════════════════
+    // CLIENTES CANÓNICOS (doc id = DNI): fuente única por persona
+    // - READ: libre (necesario para búsqueda cross-sede por DNI)
+    // - CREATE/UPDATE: libre (tablet + express lo escribe sin auth)
+    // - DELETE: BLOQUEADO — el historial de clientes es inmutable
+    // ══════════════════════════════════════════════════════════════════════
     match /clientes/{clientId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if false;
     }
 
-    // Registro de clientes por local: estructura validada
+    // ══════════════════════════════════════════════════════════════════════
+    // CLIENTES POR LOCAL (subcolección por sede): espejo privado de cada local
+    // - READ/WRITE: solo el local autorizado
+    // - DELETE: permitido para limpieza de duplicados/test desde ese local
+    // ══════════════════════════════════════════════════════════════════════
     match /clientes/{localKey}/clientes/{clientId} {
       allow read: if isAllowedLocal(localKey);
-      allow write: if isAllowedLocal(localKey)
+      allow create, update: if isAllowedLocal(localKey)
         && request.resource.data.size() <= 20
         && request.resource.data.name is string
         && request.resource.data.dni is string
         && request.resource.data.sedeKey is string;
+      allow delete: if isAllowedLocal(localKey);
     }
 
-    // Recibos Express por local
+    // ══════════════════════════════════════════════════════════════════════
+    // RECIBOS EXPRESS POR LOCAL
+    // ══════════════════════════════════════════════════════════════════════
     match /recibos_express/{localKey}/recibos/{correlative} {
       allow read: if isAllowedLocal(localKey);
       allow write: if isAllowedLocal(localKey)
         && request.resource.data.correlative == correlative
         && request.resource.data.total is number;
+      allow delete: if isAllowedLocal(localKey);
     }
 
     match /recibos_express/{localKey}/meta/{metaId} {
@@ -38,8 +55,30 @@ service cloud.firestore {
         && request.resource.data.count is number;
     }
 
-    // Chat técnico entre cliente y taller
+    // ══════════════════════════════════════════════════════════════════════
+    // CHAT TÉCNICO: el cliente usa sin autenticación (WhatsApp flow)
+    // ══════════════════════════════════════════════════════════════════════
     match /chats/{phoneKey}/messages/{messageId} {
+      allow read, write: if true;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ENTIDADES AUXILIARES: activos, órdenes, contadores, config
+    // Permisivo por ahora; restringir cuando se implemente auth completa
+    // ══════════════════════════════════════════════════════════════════════
+    match /activos/{assetId} {
+      allow read, write: if true;
+    }
+
+    match /ordenes/{ordenId} {
+      allow read, write: if true;
+    }
+
+    match /counters/{counterId} {
+      allow read, write: if true;
+    }
+
+    match /config/{docId} {
       allow read, write: if true;
     }
   }

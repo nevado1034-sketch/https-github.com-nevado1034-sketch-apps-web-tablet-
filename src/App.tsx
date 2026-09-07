@@ -1,22 +1,42 @@
 import React, { useState, useEffect } from "react";
 import Header from "./components/Header";
 import ReceptionView from "./components/ReceptionView";
+import AssignTechView from "./components/AssignTechView";
 import TechnicianView from "./components/TechnicianView";
-import DashboardView from "./components/DashboardView";
 import ClientesView from "./components/ClientesView";
 import ChatView from "./components/ChatView";
 import ExpressView from "./components/ExpressView";
 import QualityControlView from "./components/QualityControlView";
 import PresupuestoView from "./components/PresupuestoView";
+import ControlView from "./components/ControlView";
 import OrdenPublica from "./components/OrdenPublica";
 import RecepcionPublica from "./components/RecepcionPublica";
 import TerminosCondiciones from "./components/TerminosCondiciones";
 import GarantiaCondiciones from "./components/GarantiaCondiciones";
 import AuthScreen from "./components/AuthScreen";
+import AdminDashboard from "./components/AdminDashboard";
+import TimeMetricsView from "./components/TimeMetricsView";
+import WelcomeScreen from "./components/WelcomeScreen";
 import AccessManager from "./components/AccessManager";
 import { RepairItem, WorkshopStats, VideoEvidence } from "./types";
-import { AuthConfig, AuthSession, ROLE_TABS, loadConfig, loadSession, saveConfig, saveSession, clearSession, isValidConfig, pushRemoteConfig } from "./auth";
+import { AuthConfig, AuthSession, ROLE_TABS, loadConfig, loadSession, saveConfig, saveSession, clearSession, isValidConfig, pushRemoteConfig, listUsers } from "./auth";
+import { onRepairCreated, onRepairUpdated, onRepairDeleted } from "./data";
+import { nextClientId } from "./data/idGenerator";
 import { AlertCircle, RefreshCw } from "lucide-react";
+
+// Firestore rechaza valores `undefined`; elimina recursivamente esos campos
+// antes de escribir (create y update).
+function cleanUndefined(obj: any): any {
+  if (Array.isArray(obj)) return obj.map(cleanUndefined);
+  if (obj && typeof obj === "object") {
+    const out: any = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (v !== undefined) out[k] = cleanUndefined(v);
+    }
+    return out;
+  }
+  return obj;
+}
 
 class AppErrorBoundary extends React.Component<{ children?: React.ReactNode }, { error: Error | null }> {
   constructor(props: { children?: React.ReactNode }) {
@@ -39,6 +59,12 @@ class AppErrorBoundary extends React.Component<{ children?: React.ReactNode }, {
             <h2 className="text-lg font-bold text-white mb-1">Ocurrió un error inesperado</h2>
             <p className="text-sm text-slate-300 break-all mb-4">
               {error.message || "Error desconocido"}
+            </p>
+            <pre className="text-[10px] text-red-300/80 text-left break-all whitespace-pre-wrap mb-4 max-h-40 overflow-y-auto bg-black/30 rounded-lg p-2">
+              {error.stack || error.message || "sin stack"}
+            </pre>
+            <p className="text-[10px] text-slate-500 mb-4">
+              bundle: {(() => { try { const found = performance.getEntriesByType("resource").map((e: any) => e.name).find((n: string) => /index-[A-Za-z0-9_-]+\.js/.test(n)); const m = found && found.match(/index-([A-Za-z0-9_-]+)\.js/); return m ? m[1] : "?"; } catch { return "?"; } })()}
             </p>
             <button
               onClick={() => {
@@ -86,33 +112,24 @@ import {
   collection, 
   doc, 
   setDoc, 
+  deleteDoc,
   onSnapshot, 
   query, 
-  orderBy 
+  orderBy,
+  getDoc 
 } from "./firebase";
 
-function currentBuildHash(): string {
-  try {
-    const name = performance
-      .getEntriesByType("resource")
-      .map((e) => e.name)
-      .find((n) => /assets\/index-[A-Za-z0-9_-]+\.js/.test(n));
-    if (name) {
-      const m = name.match(/index-([^.]+)\.js/);
-      if (m) return m[1];
-    }
-  } catch {}
-  return "?";
-}
-
 export default function App() {
-  const [currentTab, setCurrentTab] = useState<string>("reception");
+  const [currentTab, setCurrentTab] = useState<string>(() => {
+    const s = loadSession();
+    return s && s.role ? ROLE_TABS[s.role][0] : "reception";
+  });
+  const [enteredPlatform, setEnteredPlatform] = useState<boolean>(false);
   const [repairs, setRepairs] = useState<RepairItem[]>([]);
   const [stats, setStats] = useState<WorkshopStats>({
     total: 0,
     receptioned: 0,
     diagnosing: 0,
-    waiting_parts: 0,
     repairing: 0,
     testing: 0,
     ready: 0,
@@ -254,7 +271,6 @@ export default function App() {
           total,
           receptioned: repairsData.filter((r) => r.status === "receptioned").length,
           diagnosing: repairsData.filter((r) => r.status === "diagnosing").length,
-          waiting_parts: repairsData.filter((r) => r.status === "waiting_parts").length,
           repairing: repairsData.filter((r) => r.status === "repairing").length,
           testing: repairsData.filter((r) => r.status === "testing").length,
           ready: repairsData.filter((r) => r.status === "ready").length,
@@ -289,22 +305,31 @@ export default function App() {
     setIsLoading(true);
     try {
       if (isFirebaseConfigured && db) {
-        const year = new Date().getFullYear();
-        let count = repairs.length + 1;
-        let seqId = `LT-${year}-${String(count).padStart(4, "0")}`;
+        const BRANCH_PREFIXES: Record<string, string> = {
+          lince_arenales: "LSI",
+          san_borja: "LSB",
+          surco: "LS",
+          lince_leal: "LL"
+        };
+        const branch = payload.workshopBranch || "lince_arenales";
+        const prefix = BRANCH_PREFIXES[branch] || "LT";
+        const branchRepairs = repairs.filter((r) => (r.workshopBranch || "lince_arenales") === branch);
+        let count = branchRepairs.length + 1;
+        let seqId = `${prefix}-${String(count).padStart(5, "0")}`;
         const existingIds = new Set(repairs.map((r) => r.id));
         while (existingIds.has(seqId)) {
           count++;
-          seqId = `LT-${year}-${String(count).padStart(4, "0")}`;
+          seqId = `${prefix}-${String(count).padStart(5, "0")}`;
         }
 
         // Subir videos de respaldo a Firebase Storage: evidencias/{año}/{mes}/{orden}/{timestamp}-{sede}.webm
         const videoBlobs = payload.videoEvidenceBlobs || [];
         const videoEvidence: VideoEvidence[] = [];
         let failedUploads = 0;
+        let lastUploadError = "";
         const now = new Date();
+        const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, "0");
-        const branch = payload.workshopBranch || "lince_arenales";
 
         if (videoBlobs.length) {
           if (!storage) {
@@ -328,13 +353,16 @@ export default function App() {
                   orderId: seqId,
                   branch
                 });
-              } catch (uploadErr) {
+              } catch (uploadErr: any) {
+                const errMsg = uploadErr?.code || uploadErr?.message || String(uploadErr);
                 console.error("Error subiendo video de evidencia:", uploadErr);
+                console.error("Storage bucket:", storage ? storage.app.options.storageBucket : "null");
+                lastUploadError = errMsg;
                 failedUploads++;
               }
             }
             if (failedUploads > 0) {
-              alert(`No se pudo subir ${failedUploads} video(s) a la nube. El video quedó solo en la memoria de esta tablet y el cliente NO podrá verlo. Verifica tu conexión y vuelve a grabarlo.`);
+              alert("Error subiendo video: " + lastUploadError);
             }
           }
         }
@@ -353,27 +381,32 @@ export default function App() {
             videoRecorded: videoEvidence.length > 0,
             videoEvidence
           },
-          status: "receptioned",
+          status: "diagnosing",
           source: "tablet",
           aiDiagnostic: payload.aiDiagnostic || null,
-          technicianNotes: "Vehículo recién ingresado por recepción.",
+          technicianNotes: "",
           estimatedCost: Number(payload.estimatedCost) || 0,
           actualCost: 0,
           clientSignature: payload.clientSignature || "",
           tallerSignature: payload.tallerSignature || "",
           payment: payload.payment,
+          scheduledDeadline: payload.scheduledDeadline || undefined,
+          serviceStartedAt: payload.serviceStartedAt || new Date().toISOString(),
           historyLog: [
             {
               id: `log_${Date.now()}`,
               date: new Date().toISOString(),
-              status: "receptioned",
-              description: "Ingreso del vehículo a taller por recepción en tablet.",
-              user: "Recepcionista Litio"
+              status: "diagnosing",
+              description: "Vehiculo ingresado a taller. Pasa automaticamente a diagnostico.",
+              user: "Asesora de Servicio Litio"
             }
           ]
         };
 
-        await setDoc(doc(db, "repairs", seqId), repairItem);
+        await setDoc(doc(db, "repairs", seqId), cleanUndefined(repairItem));
+
+        // Dual-write: sync to normalized collections (clientes, activos, ordenes)
+        onRepairCreated(repairItem).catch((e) => console.error("Dual-write error:", e));
 
         // Sincronizar el cliente también en la colección "clientes" (mismo formato que la App Android)
         try {
@@ -394,10 +427,24 @@ export default function App() {
           const phoneKey = (payload.client.phone || "").trim() ||
             (payload.client.dni || "").trim() || `tablet-${Date.now()}`;
           const clientDocId = phoneKey.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const dniStored = (payload.client.dni || "").trim();
+          const existingClient = await (async () => {
+            if (!dniStored && !phoneKey) return null;
+            if (!isFirebaseConfigured || !db) return null;
+            try {
+              return await getDoc(doc(db, "clientes", dniStored || clientDocId));
+            } catch {
+              return null;
+            }
+          })();
+          const internalIdStored = existingClient?.exists()
+            ? ((existingClient.data() as any)?.internalId as string) || ""
+            : await nextClientId();
           const clientData = {
+            internalId: internalIdStored,
             name: payload.client.name || "",
             phone: payload.client.phone || "",
-            dni: payload.client.dni || "",
+            dni: dniStored || phoneKey,
             email: payload.client.email || "",
             vehicleType: typeToLabel[payload.vehicle.type] || "Scooter",
             vehicleBrand: payload.vehicle.brand || "",
@@ -417,8 +464,8 @@ export default function App() {
           const branchKey = payload.workshopBranch || "lince_arenales";
           // Lista propia por local: cada local guarda sus clientes en su subcolección
           await setDoc(doc(db, "clientes", branchKey, "clientes", clientDocId), clientData);
-          // Espejo canónico por teléfono (compatibilidad con la app Android)
-          await setDoc(doc(db, "clientes", clientDocId), clientData);
+          // Espejo canónico por DNI (único por persona; evita colisiones de teléfono común)
+          await setDoc(doc(db, "clientes", dniStored || clientDocId), clientData);
         } catch (clientErr) {
           console.error("Error sincronizando cliente a Firestore:", clientErr);
         }
@@ -447,6 +494,30 @@ export default function App() {
     }
   };
 
+  const handleDeleteRepair = async (repair: RepairItem) => {
+    if (!isFirebaseConfigured || !db) return;
+    try {
+        await deleteDoc(doc(db, "repairs", repair.id));
+
+        // Dual-write: delete from ordenes collection
+        onRepairDeleted(repair.id).catch((e) => console.error("Dual-write delete error:", e));
+
+        const phone = (repair.client?.phone || "").replace(/[^\d]/g, "");
+      const dni = (repair.client?.dni || "").replace(/[^\d]/g, "");
+      if (phone) {
+        await deleteDoc(doc(db, "clientes", phone)).catch(() => {});
+        await deleteDoc(doc(db, "clientes", repair.workshopBranch || "lince_arenales", "clientes", phone)).catch(() => {});
+      }
+      if (dni && dni !== phone) {
+        await deleteDoc(doc(db, "clientes", dni)).catch(() => {});
+      }
+      setRepairs((prev) => prev.filter((r) => r.id !== repair.id));
+    } catch (err) {
+      console.error("Error eliminando repair:", err);
+      alert("No se pudo eliminar. Intente de nuevo.");
+    }
+  };
+
   // Put repair status/notes update (REST / Firestore)
   const handleUpdateRepair = async (id: string, updateData: any) => {
     setIsLoading(true);
@@ -465,7 +536,8 @@ export default function App() {
           const statusLabels: Record<string, string> = {
             receptioned: "Recibido",
             diagnosing: "En Diagnóstico",
-            waiting_parts: "Esperando Repuestos",
+            quoted: "Presupuesto",
+            paid: "Pagado",
             repairing: "En Reparación",
             testing: "En Pruebas",
             ready: "Listo para Entrega",
@@ -478,6 +550,16 @@ export default function App() {
             status: newStatus,
             description: `Estado cambiado de "${statusLabels[oldStatus] || oldStatus}" a "${statusLabels[newStatus] || newStatus}".`,
             user: updateData.technicianName || "Sistema Litio"
+          });
+        }
+
+        if (updateData.assignedTech && updateData.assignedTech !== currentItem.assignedTech) {
+          logs.push({
+            id: `log_${Date.now()}_asg`,
+            date: new Date().toISOString(),
+            status: currentItem.status || "receptioned",
+            description: `Derivado al técnico ${updateData.assignedTech}.`,
+            user: updateData.assignedByName || session?.name || "Asesora de Servicio"
           });
         }
 
@@ -537,7 +619,21 @@ export default function App() {
           }
         };
 
-        await setDoc(doc(db, "repairs", id), updatedItem);
+        const cleanUndefined = (obj: any): any => {
+          if (Array.isArray(obj)) return obj.map(cleanUndefined);
+          if (obj && typeof obj === "object") {
+            const out: any = {};
+            for (const [k, v] of Object.entries(obj)) {
+              if (v !== undefined) out[k] = cleanUndefined(v);
+            }
+            return out;
+          }
+          return obj;
+        };
+        await setDoc(doc(db, "repairs", id), cleanUndefined(updatedItem));
+
+        // Dual-write: sync update to ordenes collection
+        onRepairUpdated(cleanUndefined(updatedItem) as RepairItem).catch((e) => console.error("Dual-write update error:", e));
       } else {
         delete updateData.videoEvidenceBlobs;
         const response = await fetch(`/api/repairs/${id}`, {
@@ -598,32 +694,41 @@ export default function App() {
         onAuthed={(s) => {
           setSession(s);
           saveSession(s);
+          setCurrentTab(ROLE_TABS[s.role][0]);
+        }}
+      />
+    );
+  }
+
+  const visibleRepairs = session.localKey
+    ? repairs.filter((r) => r.workshopBranch === session.localKey)
+    : repairs;
+
+  // El admin entra directo al Panel de Control. Jefas y técnicos ven su pantalla de trabajo.
+  if (!enteredPlatform && session.role !== "tecnico" && session.role !== "admin") {
+    return (
+      <WelcomeScreen
+        session={session}
+        repairs={visibleRepairs}
+        onNewOrder={() => {
+          setEnteredPlatform(true);
+          setCurrentTab("reception");
+        }}
+        onClients={() => {
+          setEnteredPlatform(true);
+          setCurrentTab("clientes");
+        }}
+        onLogout={() => {
+          clearSession();
+          setSession(null);
+          setEnteredPlatform(false);
+          setCurrentTab("reception");
         }}
       />
     );
   }
 
   const allowedTabs = ROLE_TABS[session.role];
-
-  // Las jefas y técnicos solo ven la información de su propio local; el admin ve todo
-  const visibleRepairs = session.localKey
-    ? repairs.filter((r) => r.workshopBranch === session.localKey)
-    : repairs;
-  const visibleStats: WorkshopStats = session.localKey
-    ? {
-        total: visibleRepairs.length,
-        receptioned: visibleRepairs.filter((r) => r.status === "receptioned").length,
-        diagnosing: visibleRepairs.filter((r) => r.status === "diagnosing").length,
-        waiting_parts: visibleRepairs.filter((r) => r.status === "waiting_parts").length,
-        repairing: visibleRepairs.filter((r) => r.status === "repairing").length,
-        testing: visibleRepairs.filter((r) => r.status === "testing").length,
-        ready: visibleRepairs.filter((r) => r.status === "ready").length,
-        delivered: visibleRepairs.filter((r) => r.status === "delivered").length,
-        monthlyEarnings: visibleRepairs
-          .filter((r) => r.status === "delivered" || r.status === "ready")
-          .reduce((sum, r) => sum + (r.actualCost || r.estimatedCost || 0), 0)
-      }
-    : stats;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
@@ -636,10 +741,11 @@ export default function App() {
         allowedTabs={allowedTabs}
         currentUser={session}
         qcCount={visibleRepairs.filter((r) => r.status === "testing").length}
-        presupuestoCount={visibleRepairs.filter((r) => (r.spareParts || []).length > 0).length}
+        presupuestoCount={visibleRepairs.filter((r) => r.status !== "delivered" && r.status !== "ready" && !(r.serviceType === "garantia" && r.warrantyCovered)).length}
         onLogout={() => {
           clearSession();
           setSession(null);
+          setEnteredPlatform(false);
           setCurrentTab("reception");
         }}
       />
@@ -667,9 +773,22 @@ export default function App() {
               <ReceptionView
                 repairs={visibleRepairs}
                 onCreateRepair={handleCreateRepair}
+                onDeleteRepair={handleDeleteRepair}
+                onUpdateRepair={handleUpdateRepair}
                 isLoading={isLoading}
                 userLocalKey={session.localKey}
                 userRole={session.role}
+                onOpenExpress={() => setCurrentTab("express")}
+              />
+            )}
+
+            {currentTab === "derivar" && (
+              <AssignTechView
+                repairs={visibleRepairs}
+                onUpdateRepair={handleUpdateRepair}
+                userLocalKey={session.localKey}
+                userName={session.name}
+                siteConfig={authConfig}
               />
             )}
 
@@ -679,6 +798,9 @@ export default function App() {
                 onUpdateRepair={handleUpdateRepair}
                 isLoading={isLoading}
                 userLocalKey={session.localKey}
+                userName={session.name}
+                userRole={session.role}
+                initialMode="diagnostico"
               />
             )}
 
@@ -688,18 +810,49 @@ export default function App() {
                 onUpdateRepair={handleUpdateRepair}
                 userLocalKey={session.localKey}
                 userName={session.name}
+                siteConfig={authConfig}
               />
             )}
 
-            {currentTab === "dashboard" && (
-              <DashboardView
+            {currentTab === "control" && (
+              <ControlView
                 repairs={visibleRepairs}
-                stats={visibleStats}
+                userLocalKey={session.localKey}
+                siteConfig={authConfig}
+                onUpdateRepair={handleUpdateRepair}
+              />
+            )}
+
+            {currentTab === "repair" && (
+              <TechnicianView
+                repairs={visibleRepairs}
+                onUpdateRepair={handleUpdateRepair}
+                isLoading={isLoading}
+                userLocalKey={session.localKey}
+                userName={session.name}
+                userRole={session.role}
+                initialMode="reparacion"
+              />
+            )}
+
+            {currentTab === "admin-dashboard" && session.role === "admin" && (
+              <AdminDashboard
+                repairs={repairs}
+                stats={stats}
+              />
+            )}
+
+            {currentTab === "tiempos" && (
+              <TimeMetricsView
+                repairs={repairs}
+                userLocalKey={session.localKey}
+                canEdit={session.role === "admin"}
+                technicians={authConfig ? listUsers(authConfig).filter((u) => u.role === "tecnico").map((u) => u.name.trim()) : []}
               />
             )}
 
             {currentTab === "clientes" && (
-              <ClientesView repairs={visibleRepairs} userLocalKey={session.localKey} />
+              <ClientesView repairs={visibleRepairs} onUpdateRepair={handleUpdateRepair} userLocalKey={session.localKey} />
             )}
 
             {currentTab === "chat" && (
@@ -724,7 +877,7 @@ export default function App() {
                 <div className="mb-6">
                   <h1 className="text-xl font-bold text-white">Administración de accesos</h1>
                   <p className="text-sm text-slate-400 mt-1">
-                    Configura las jefas y técnicos de cada local. Los cambios se aplican en todos los
+                    Configura las asesoras y técnicos de cada local. Los cambios se aplican en todos los
                     dispositivos conectados.
                   </p>
                 </div>
@@ -749,8 +902,7 @@ export default function App() {
       {/* Footer corporativo */}
       <footer className="bg-slate-900 border-t border-slate-800 py-4 text-center text-xs text-slate-500 font-medium mt-auto">
         <div className="max-w-7xl mx-auto px-4">
-          <p>© 2026 Litio Energy S.A.C. - Sistema Automatizado de Taller de Vehículos Eléctricos</p>
-          <p className="mt-1">Build: {currentBuildHash()}</p>
+          <p>© 2026 Litio Energy S.A.C. Todos los derechos reservados.</p>
         </div>
       </footer>
     </div>

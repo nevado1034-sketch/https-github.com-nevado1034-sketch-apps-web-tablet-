@@ -19,6 +19,7 @@ import {
   Trash2,
   FileSignature,
   Printer,
+  Pencil,
   Search,
   Database,
   History,
@@ -32,19 +33,23 @@ import {
   Table,
   CloudDownload,
   Mic,
-  MessageCircle
+  Play,
+  Zap
 } from "lucide-react";
 import { RepairItem, VehicleType, VisualState, Accessories, WorkshopBranch, ServiceType } from "../types";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
 import { generateRepairPdf } from "../utils/pdfGenerator";
-import { db, isFirebaseConfigured, collection, query, where, getDocs, onSnapshot, orderBy, limit } from "../firebase";
+import { db, isFirebaseConfigured, collection, doc, setDoc, query, where, getDocs, onSnapshot, orderBy, limit } from "../firebase";
 
 interface ReceptionViewProps {
   repairs: RepairItem[];
   onCreateRepair: (newRepair: any) => Promise<RepairItem | undefined>;
+  onDeleteRepair?: (repair: RepairItem) => Promise<void>;
+  onUpdateRepair?: (id: string, updates: Partial<RepairItem>) => Promise<void>;
   isLoading: boolean;
   userLocalKey?: string;
   userRole?: string;
+  onOpenExpress?: () => void;
 }
 
 const COMMON_BRANDS: Record<VehicleType, string[]> = {
@@ -125,7 +130,7 @@ const ANDROID_TYPE_KEYS: Record<string, string> = {
   Otro: "otro"
 };
 
-export default function ReceptionView({ repairs, onCreateRepair, isLoading, userLocalKey, userRole }: ReceptionViewProps) {
+export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair, onUpdateRepair, isLoading, userLocalKey, userRole, onOpenExpress }: ReceptionViewProps) {
   // Branch state (Sede)
   const [workshopBranch, setWorkshopBranch] = useState<WorkshopBranch>(
     (userLocalKey as WorkshopBranch) || "lince_arenales"
@@ -149,6 +154,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
   // Service Type state
   const [serviceType, setServiceType] = useState<ServiceType>("mantenimiento");
   const [serviceTypeDetail, setServiceTypeDetail] = useState("");
+  const [scheduledDeadline, setScheduledDeadline] = useState<string>("");
 
   // Client State
   const [clientName, setClientName] = useState("");
@@ -169,6 +175,13 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
   const [importLoading, setImportLoading] = useState(false);
   const [importStatusMessage, setImportStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [copiedScript, setCopiedScript] = useState(false);
+
+  // Edit client state
+  const [editingRepairId, setEditingRepairId] = useState<string | null>(null);
+  const [editClientName, setEditClientName] = useState("");
+  const [editClientPhone, setEditClientPhone] = useState("");
+  const [editClientEmail, setEditClientEmail] = useState("");
+  const [editClientDni, setEditClientDni] = useState("");
 
   const handleImportGoogleSheets = async () => {
     if (!sheetUrlInput || !sheetUrlInput.trim()) {
@@ -334,19 +347,12 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
           }
 
           // 2) Si no hay match en el local, buscar en la colección canónica (App Android)
+          // Acepta clientes de CUALQUIER sede: un DNI es único por persona sin importar la sede de origen
           if (!firestoreMatch) {
             const q = query(collection(db, "clientes"), where("dni", "==", queryInput));
             const snap = await getDocs(q);
-            // Acepta tanto la etiqueta de la tablet como las que usa la app Android
-            const acceptedSedes = [
-              BRANCH_TO_SEDE_LABEL[workshopBranch],
-              ...(ANDROID_SEDE_LABELS[workshopBranch] || [])
-            ].filter(Boolean);
             for (const sdoc of snap.docs) {
               const d = sdoc.data() as any;
-              // Cada local mantiene su propia lista de clientes (solo el local seleccionado)
-              const matchesSede = d.sedeKey === workshopBranch || acceptedSedes.includes(d.sede);
-              if (!matchesSede) continue;
               const appVehicleType = String(d.vehicleType || "").toLowerCase();
               firestoreMatch = {
                 name: d.name || "",
@@ -407,17 +413,18 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
         setClientSearchStatus("found");
 
         if (autoApply) {
-          handleApplyClientData(match, match.defaultVehicle || (match.vehiclesHistory && match.vehiclesHistory[0]));
+          handleApplyClientData(match);
         }
       } else {
         const localMatch = repairs.find(
           r =>
+            r.status !== "delivered" &&
             r.workshopBranch === workshopBranch &&
             (r.client?.dni?.toLowerCase().includes(queryInput.toLowerCase()) ||
              r.client?.name?.toLowerCase().includes(queryInput.toLowerCase()))
         );
         if (localMatch) {
-          const clientRepairs = repairs.filter(r => r.workshopBranch === workshopBranch && r.client?.dni === localMatch.client?.dni);
+          const clientRepairs = repairs.filter(r => r.workshopBranch === workshopBranch && r.status !== "delivered" && r.client?.dni === localMatch.client?.dni);
           const foundObj = {
             name: localMatch.client.name,
             dni: localMatch.client.dni,
@@ -438,7 +445,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
           setClientSearchStatus("found");
 
           if (autoApply) {
-            handleApplyClientData(foundObj, foundObj.vehiclesHistory[0]);
+            handleApplyClientData(foundObj);
           }
         } else {
           setClientSearchStatus("not_found");
@@ -459,16 +466,13 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
     if (clientData.email) setClientEmail(clientData.email);
     if (clientData.name) setClientSignatureName(clientData.name);
 
+    // Solo se autocompleta el vehículo cuando el usuario lo selecciona explícitamente
+    // en el historial. El auto-llenado por DNI deja la sección 2 en blanco.
     if (selectedVehicle) {
       if (selectedVehicle.type) setVehicleType(selectedVehicle.type as VehicleType);
       if (selectedVehicle.brand) setBrand(selectedVehicle.brand);
       if (selectedVehicle.model) setModel(selectedVehicle.model);
       if (selectedVehicle.voltage) setVoltage(selectedVehicle.voltage);
-    } else if (clientData.vehicleTypeMap || clientData.vehicleBrand) {
-      if (clientData.vehicleTypeMap) setVehicleType(clientData.vehicleTypeMap as VehicleType);
-      if (clientData.vehicleBrand) setBrand(clientData.vehicleBrand);
-      if (clientData.vehicleModel) setModel(clientData.vehicleModel);
-      if (clientData.problemDescription) setReportedFailure(clientData.problemDescription);
     }
   };
 
@@ -537,6 +541,8 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
 
   // Videos de respaldo grabados (se suben a Firebase Storage al registrar la orden)
   const [recordedVideos, setRecordedVideos] = useState<RecordedVideo[]>([]);
+  const [reviewIdx, setReviewIdx] = useState<number | null>(null);
+  const reviewUrl = useMemo(() => (reviewIdx !== null && recordedVideos[reviewIdx] ? URL.createObjectURL(recordedVideos[reviewIdx].blob) : ""), [reviewIdx, recordedVideos]);
 
   // Drawn conformity signatures
   const [clientSignature, setClientSignature] = useState("");
@@ -554,7 +560,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [createdId, setCreatedId] = useState("");
   const [lastCreatedRepair, setLastCreatedRepair] = useState<RepairItem | null>(null);
-  const [sendingWa, setSendingWa] = useState(false);
+  const submittingRef = React.useRef(false);
 
   const buildWelcomeMessage = (r: RepairItem): string => {
     const typeLabels: Record<string, string> = {
@@ -574,32 +580,14 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
       "",
       "Tu vehículo ha sido ingresado correctamente a nuestra sede *" + (WORKSHOP_BRANCH_LABELS[r.workshopBranch] || r.workshopBranch) + "*.",
       "",
-      "Haz clic en el siguiente enlace para ver los detalles y confirmar el ingreso:",
+      "Puedes ver los detalles de tu vehículo en el siguiente enlace:",
       recepcionLink,
-      "",
-      "¿Confirmas el ingreso de tu vehículo?",
       "",
       "Gracias por confiar en *Litio Energy* ⚡"
     ];
     return lines.join("\n");
   };
 
-  const shareWelcomeWhatsApp = async () => {
-    if (!lastCreatedRepair) return;
-    if (!lastCreatedRepair.client.phone) {
-      alert("El cliente no tiene teléfono registrado.");
-      return;
-    }
-    setSendingWa(true);
-    try {
-      const message = buildWelcomeMessage(lastCreatedRepair);
-      const digits = (lastCreatedRepair.client.phone || "").replace(/[^\d]/g, "");
-      const waPhone = digits.startsWith("51") ? digits : digits.length === 9 ? "51" + digits : digits;
-      window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(message)}`, "_blank");
-    } finally {
-      setSendingWa(false);
-    }
-  };
 
   const handleAccessoriesChange = (field: keyof Accessories, value: any) => {
     setAccessories(prev => ({ ...prev, [field]: value }));
@@ -611,6 +599,8 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current || isLoading) return;
+    submittingRef.current = true;
     if (!clientName || !clientPhone || !brand || !reportedFailure) {
       alert("Por favor completa los campos obligatorios (*)");
       return;
@@ -648,12 +638,14 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
       clientSignatureName,
       tallerSignature,
       tallerSignatureName,
+      scheduledDeadline: scheduledDeadline || undefined,
+      serviceStartedAt: new Date().toISOString(),
       payment: {
         estimatedCost: 0,
         advancePayment: 0,
         remainingBalance: 0,
         paymentMethod: "efectivo",
-        paymentNotes: "Pendiente de presupuesto (lo define la jefa del local)."
+        paymentNotes: ""
       }
     };
 
@@ -664,19 +656,37 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
         setCreatedId(created.id);
       }
       setSubmitSuccess(true);
+
+      if (created) {
+        const phone = (created.client?.phone || "").replace(/[^\d]/g, "");
+        if (phone) {
+          const waPhone = phone.startsWith("51") ? phone : phone.length === 9 ? "51" + phone : phone;
+          const message = buildWelcomeMessage(created);
+          window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(message)}`, "_blank");
+        }
+      }
       
       // Reset form
       setClientName("");
       setClientPhone("");
       setClientEmail("");
       setClientDni("");
+      setClientSearchStatus("idle");
+      setFoundClientData(null);
+      setServiceType("mantenimiento");
+      setServiceTypeDetail("");
+      setScheduledDeadline("");
+      setVehicleType("otro");
+      setShowMotoMenu(false);
       setBrand("");
       setModel("");
+      setVoltage("36V");
+      setBatteryCondition("0-1año");
       setReportedFailure("");
-      setServiceTypeDetail("");
       setAccessories({ charger: false, key: false, battery: false, helmet: false, padlock: false, others: "" });
       setVisualState({ scratches: false, cracks: false, brakesOk: true, lightsOk: true, screenOk: true, tiresOk: true, videoRecorded: false, photosTaken: false, notes: "", photos: [], videoEvidence: [] });
       setRecordedVideos([]);
+      setReviewIdx(null);
       setTermsAccepted(false);
       setClientSignatureName("");
       setClientSignature("");
@@ -688,18 +698,25 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
     } catch (err) {
       console.error(err);
       alert("Error al ingresar vehículo a taller.");
+    } finally {
+      submittingRef.current = false;
     }
   };
 
   // Fusiona los ingresos de la tablet (repairs) con los de la app Android (clientes sin OT aún)
   const recentEntries = useMemo(() => {
+    const isAdmin = !userLocalKey;
+
+    const filteredRepairs = isAdmin
+      ? repairs.filter((r) => r.workshopBranch === workshopBranch)
+      : repairs;
+
     const repairKeys = new Set(
-      repairs
+      filteredRepairs
         .map((r) => `${(r.client?.dni || "").trim()}|${(r.client?.phone || "").trim()}`)
         .filter((k) => k !== "|")
     );
-    const isAdmin = !userLocalKey;
-    const sedeLabels = isAdmin ? null : ANDROID_SEDE_LABELS[workshopBranch] || null;
+    const sedeLabels = isAdmin ? (ANDROID_SEDE_LABELS[workshopBranch] || null) : ANDROID_SEDE_LABELS[workshopBranch] || null;
 
     const android = androidClients
       .filter((c) => c.source !== "tablet")
@@ -723,7 +740,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
         androidRaw: c
       }));
 
-    return [...android, ...repairs]
+    return [...android, ...repairs.filter(r => r.status !== "delivered")]
       .sort((a, b) => new Date(b.receptionDate).getTime() - new Date(a.receptionDate).getTime());
   }, [androidClients, repairs, workshopBranch, userLocalKey]);
 
@@ -752,7 +769,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
               className="flex items-center space-x-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all self-start sm:self-center shrink-0 cursor-pointer shadow-lg hover:shadow-emerald-500/20"
             >
               <Printer className="w-4 h-4" />
-              <span>Imprimir Ficha</span>
+              <span>Imprimir Ficha de Conformidad</span>
             </button>
           )}
         </div>
@@ -778,22 +795,30 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
 
                 {/* Sede Selector */}
                 <div className="flex items-center space-x-2 bg-slate-950/60 p-2 rounded-xl border border-slate-800">
-                  <MapPin className="w-4 h-4 text-cyan-400" />
-                  {userLocalKey ? (
-                    <span className="text-slate-200 text-xs font-bold pr-2">
-                      {WORKSHOP_BRANCH_LABELS[userLocalKey as WorkshopBranch]}
-                    </span>
-                  ) : (
-                    <select
-                      value={workshopBranch}
-                      onChange={e => setWorkshopBranch(e.target.value as WorkshopBranch)}
-                      className="bg-transparent text-slate-200 text-xs font-bold focus:outline-none pr-2"
+                  {onOpenExpress && (
+                    <button
+                      type="button"
+                      onClick={onOpenExpress}
+                      className="flex items-center space-x-1.5 text-cyan-400 hover:text-cyan-300 text-xs font-black uppercase tracking-wider px-3 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 hover:bg-cyan-500/20 transition-all"
                     >
-                      <option value="lince_arenales" className="bg-slate-950 text-slate-100">Sede Arenales - San Isidro</option>
-                      <option value="surco" className="bg-slate-950 text-slate-100">Sede Surco</option>
-                      <option value="san_borja" className="bg-slate-950 text-slate-100">Sede San Borja</option>
-                      <option value="lince_leal" className="bg-slate-950 text-slate-100">Sede Jose Leal - Lince</option>
-                    </select>
+                      <Zap className="w-3.5 h-3.5" />
+                      <span>Servicios Express</span>
+                    </button>
+                  )}
+                  {!userLocalKey && (
+                    <>
+                      <MapPin className="w-4 h-4 text-cyan-400" />
+                      <select
+                        value={workshopBranch}
+                        onChange={e => setWorkshopBranch(e.target.value as WorkshopBranch)}
+                        className="bg-transparent text-slate-200 text-xs font-bold focus:outline-none pr-2"
+                      >
+                        <option value="lince_arenales" className="bg-slate-950 text-slate-100">Sede Arenales - San Isidro</option>
+                        <option value="surco" className="bg-slate-950 text-slate-100">Sede Surco</option>
+                        <option value="san_borja" className="bg-slate-950 text-slate-100">Sede San Borja</option>
+                        <option value="lince_leal" className="bg-slate-950 text-slate-100">Sede Jose Leal - Lince</option>
+                      </select>
+                    </>
                   )}
                 </div>
               </div>
@@ -810,22 +835,6 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                   </div>
                   
                   <div className="flex items-center space-x-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowImportModal(true);
-                        setImportStatusMessage(null);
-                      }}
-                      className="flex items-center space-x-1.5 px-3 py-1 bg-cyan-950/90 hover:bg-cyan-900 text-cyan-300 border border-cyan-500/40 rounded-lg text-xs font-bold transition-all shadow-[0_0_10px_rgba(6,182,212,0.15)] cursor-pointer"
-                      title="Importar base de datos de clientes desde Excel, CSV o Google Sheets"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>📊 Vincular Google Sheets / Excel</span>
-                    </button>
-                    <span className="hidden sm:flex text-[10px] text-cyan-400/80 font-mono items-center gap-1 bg-slate-950 px-2 py-1 rounded-md border border-slate-800">
-                      <Database className="w-3 h-3" />
-                      Búsqueda Litio
-                    </span>
                   </div>
                 </div>
                 
@@ -1147,7 +1156,7 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Vida útil de la Batería</label>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Tiempo de Uso de la Batería</label>
                     <div className="grid grid-cols-4 gap-1.5">
                       {[
                         { value: "0-1año", label: "0-1 año" },
@@ -1207,7 +1216,9 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                     <button
                       type="button"
                       key={opt.value}
-                      onClick={() => setServiceType(opt.value as ServiceType)}
+                      onClick={() => {
+                        setServiceType(opt.value as ServiceType);
+                      }}
                       className={`p-3 rounded-xl border text-left transition-all flex flex-col items-start ${
                         serviceType === opt.value
                           ? "bg-cyan-500/10 border-cyan-500/50 text-cyan-400 ring-2 ring-cyan-500/10 font-bold"
@@ -1216,6 +1227,11 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                     >
                       <span className="text-xl mb-1">{opt.icon}</span>
                       <span className="text-xs font-bold">{opt.label}</span>
+                      {serviceType === opt.value && scheduledDeadline && (
+                        <span className="text-[9px] text-cyan-300/70 mt-1">
+                          ⏰ {new Date(scheduledDeadline).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })}
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -1367,6 +1383,14 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                           </span>
                           <button
                             type="button"
+                            onClick={() => setReviewIdx(idx)}
+                            className="flex items-center space-x-1 px-2 py-1 bg-rose-500/90 hover:bg-rose-400 text-white rounded-lg text-[9px] font-bold transition-colors"
+                          >
+                            <Play className="w-2.5 h-2.5" />
+                            <span>Revisar</span>
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => setRecordedVideos(prev => prev.filter((_, i) => i !== idx))}
                             className="absolute top-1 right-1 p-1 bg-slate-950/80 border border-slate-800 text-rose-400 hover:text-rose-300 rounded-md"
                             title="Quitar video"
@@ -1494,17 +1518,6 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                     <PlusCircle className="w-5 h-5" />
                     <span>{isLoading ? "Ingresando a taller..." : "REGISTRAR VEHÍCULO E INGRESO EN COLA"}</span>
                   </button>
-                  {lastCreatedRepair && (
-                    <button
-                      type="button"
-                      onClick={shareWelcomeWhatsApp}
-                      disabled={sendingWa}
-                      className="flex-1 sm:flex-none bg-[#25D366] hover:bg-[#20bd5a] text-white py-3.5 px-6 rounded-xl font-bold text-sm tracking-wide shadow-[0_4px_25px_rgba(37,211,102,0.25)] transition-all flex items-center justify-center space-x-2 disabled:opacity-50"
-                    >
-                      <MessageCircle className="w-5 h-5" />
-                      <span>{sendingWa ? "Abriendo..." : "Enviar Bienvenida WhatsApp"}</span>
-                    </button>
-                  )}
                 </div>
                 <p className="text-[10px] text-slate-500 text-center mt-2.5 font-mono">
                   Gracias por confiar en LITIO ENERGY • Av. Arenales, Surco, San Borja & Jose Leal
@@ -1544,7 +1557,8 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                   const statusColors: Record<string, string> = {
                     receptioned: "bg-cyan-500/10 text-cyan-400 border-cyan-500/25",
                     diagnosing: "bg-purple-500/10 text-purple-400 border-purple-500/25",
-                    waiting_parts: "bg-amber-500/10 text-amber-400 border-amber-500/25",
+                    quoted: "bg-amber-500/10 text-amber-400 border-amber-500/25",
+                    paid: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
                     repairing: "bg-blue-500/10 text-blue-400 border-blue-500/25",
                     testing: "bg-pink-500/10 text-pink-400 border-pink-500/25",
                     ready: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
@@ -1554,7 +1568,8 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                   const statusLabels: Record<string, string> = {
                     receptioned: "Recibido",
                     diagnosing: "Diag.",
-                    waiting_parts: "Repuestos",
+                    quoted: "Ppto",
+                    paid: "Pagado",
                     repairing: "Reparando",
                     testing: "Pruebas",
                     ready: "Listo",
@@ -1584,20 +1599,47 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                         </p>
                       </div>
 
-                      <div className="flex items-center space-x-2">
+                      <div className="flex items-center space-x-1.5">
                         {rep.source === "android" ? (
                           <span className={`px-2 py-1 text-[9px] font-bold uppercase tracking-wide ${canFillAndroid ? "text-green-400/80" : "text-slate-600"}`}>
                             {canFillAndroid ? "Clic para llenar ⤴" : "Solo lectura"}
                           </span>
                         ) : (
+                        <>
                         <button
                           type="button"
                           onClick={() => generateRepairPdf(rep)}
                           className="p-1.5 bg-slate-900 text-cyan-400 rounded-lg border border-slate-800 hover:border-cyan-500 hover:bg-cyan-950/20 transition-all cursor-pointer opacity-80 group-hover:opacity-100"
-                          title="Imprimir Ficha de Conformidad PDF"
+                          title="Imprimir Ficha de Conformidad"
                         >
                           <Printer className="w-3.5 h-3.5" />
                         </button>
+                        {onUpdateRepair && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingRepairId(rep.id);
+                              setEditClientName(rep.client.name || "");
+                              setEditClientPhone(rep.client.phone || "");
+                              setEditClientEmail(rep.client.email || "");
+                              setEditClientDni(rep.client.dni || "");
+                            }}
+                            className="p-1.5 bg-slate-900 text-amber-400 rounded-lg border border-slate-800 hover:border-amber-500 hover:bg-amber-950/20 transition-all cursor-pointer opacity-80 group-hover:opacity-100"
+                            title="Editar datos del cliente"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); if (confirm("¿Eliminar este registro?")) onDeleteRepair(rep); }}
+                          className="hidden p-1.5 text-red-400"
+                          title="Eliminar registro"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                        </>
                         )}
                         <div className="text-right space-y-1">
                           <span className={`inline-block px-2 py-0.5 rounded-full border text-[10px] font-bold leading-none ${statusColors[rep.status] || "bg-slate-950 text-slate-400"}`}>
@@ -1928,6 +1970,151 @@ export default function ReceptionView({ repairs, onCreateRepair, isLoading, user
                 Cerrar
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Client Modal */}
+      {editingRepairId && (() => {
+        const editRepair = repairs.find(r => r.id === editingRepairId);
+        if (!editRepair) return null;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+            <div className="bg-slate-900 rounded-2xl border border-slate-700 shadow-2xl w-full max-w-md overflow-hidden">
+              <div className="bg-slate-950 p-4 border-b border-slate-800 flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Pencil className="w-4 h-4 text-amber-400" />
+                  <span className="font-display font-black text-sm text-slate-100 uppercase tracking-wide">
+                    Editar Cliente
+                  </span>
+                </div>
+                <span className="text-xs text-slate-400 font-mono">{editRepair.id}</span>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Nombre del Cliente</label>
+                  <input
+                    type="text"
+                    value={editClientName}
+                    onChange={(e) => setEditClientName(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 font-semibold focus:border-amber-500 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">DNI / C.E.</label>
+                  <input
+                    type="text"
+                    value={editClientDni}
+                    onChange={(e) => setEditClientDni(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 font-mono focus:border-amber-500 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Teléfono</label>
+                  <input
+                    type="text"
+                    value={editClientPhone}
+                    onChange={(e) => setEditClientPhone(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 font-mono focus:border-amber-500 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Email</label>
+                  <input
+                    type="text"
+                    value={editClientEmail}
+                    onChange={(e) => setEditClientEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:border-amber-500 focus:outline-none transition-colors"
+                  />
+                </div>
+              </div>
+
+              <div className="p-4 border-t border-slate-800 flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setEditingRepairId(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-400 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!editClientName.trim()) {
+                      alert("El nombre del cliente es obligatorio.");
+                      return;
+                    }
+                    if (onUpdateRepair) {
+                      const updatedClient = {
+                        name: editClientName.trim(),
+                        phone: editClientPhone.trim(),
+                        email: editClientEmail.trim(),
+                        dni: editClientDni.trim()
+                      };
+                      await onUpdateRepair(editingRepairId, {
+                        client: updatedClient
+                      });
+
+                      if (isFirebaseConfigured && db) {
+                        const editRepair = repairs.find(r => r.id === editingRepairId);
+                        if (editRepair) {
+                          const oldPhone = editRepair.client?.phone;
+                          const branch = editRepair.workshopBranch || workshopBranch;
+                          if (updatedClient.phone) {
+                            setDoc(doc(db, "clientes", branch, "clientes", updatedClient.phone), updatedClient, { merge: true }).catch(() => {});
+                            if (oldPhone && oldPhone !== updatedClient.phone) {
+                              setDoc(doc(db, "clientes", branch, "clientes", oldPhone), updatedClient, { merge: true }).catch(() => {});
+                            }
+                          }
+                          if (updatedClient.dni) {
+                            setDoc(doc(db, "clientes", updatedClient.dni), updatedClient, { merge: true }).catch(() => {});
+                          }
+                          if (editRepair.client?.dni && editRepair.client.dni !== updatedClient.dni) {
+                            setDoc(doc(db, "clientes", editRepair.client.dni), updatedClient, { merge: true }).catch(() => {});
+                          }
+                        }
+                      }
+
+                      setEditingRepairId(null);
+                    }
+                  }}
+                  className="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors cursor-pointer shadow-lg shadow-amber-600/20"
+                >
+                  Guardar Cambios
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Revisar video de respaldo en pantalla completa */}
+      {reviewIdx !== null && reviewUrl && recordedVideos[reviewIdx] && (
+        <div className="fixed inset-0 z-[60] bg-black flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 bg-slate-950/90 border-b border-slate-800">
+            <span className="text-xs font-bold text-slate-100 uppercase tracking-wider flex items-center space-x-2">
+              <Video className="w-4 h-4 text-cyan-400" />
+              <span>Revisar Video de Respaldo {reviewIdx + 1}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setReviewIdx(null)}
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-bold transition-colors"
+            >
+              <span>Cerrar</span>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="flex-1 w-full flex items-center justify-center bg-black p-2">
+            <video
+              src={reviewUrl}
+              className="max-h-full w-full object-contain"
+              controls
+              autoPlay
+              playsInline
+              preload="auto"
+            />
           </div>
         </div>
       )}
