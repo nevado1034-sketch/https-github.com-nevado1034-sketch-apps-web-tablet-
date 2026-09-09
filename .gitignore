@@ -19,6 +19,7 @@ check_data.mjs
 fix_*.mjs
 
 # scripts/tools temporales de depuración (no forman parte de la app)
+_tools/
 _cleanclients.cjs
 _tmp_getconfig.cjs
 check-dni.mjs
