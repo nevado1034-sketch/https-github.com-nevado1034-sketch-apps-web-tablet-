@@ -1335,16 +1335,16 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
 
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                   {[
-                    { id: "scratches", label: "Tiene Rayones / Raspones", negative: true },
-                    { id: "cracks", label: "Tiene Fisuras o Golpes", negative: true },
-                    { id: "brakesOk", label: "Frenos Operativos", negative: false },
-                    { id: "lightsOk", label: "Luces Funcionales", negative: false },
-                    { id: "screenOk", label: "Pantalla/Display OK", negative: false },
-                    { id: "tiresOk", label: "Neumáticos/Llantas OK", negative: false }
+                    { id: "scratches", label: "No tiene Rayones / Raspones", okValue: false },
+                    { id: "cracks", label: "No tiene Fisuras ni Golpes", okValue: false },
+                    { id: "brakesOk", label: "Frenos Operativos", okValue: true },
+                    { id: "lightsOk", label: "Luces Funcionales", okValue: true },
+                    { id: "screenOk", label: "Pantalla/Display OK", okValue: true },
+                    { id: "tiresOk", label: "Neumáticos/Llantas OK", okValue: true }
                   ].map(chk => {
-                    const checkedValue = visualState[chk.id as keyof VisualState] === true;
-                    const isIssue = chk.negative ? checkedValue : !checkedValue;
-                    
+                    const isOk = (visualState[chk.id as keyof VisualState] === true) === chk.okValue;
+                    const isIssue = !isOk;
+
                     return (
                       <label
                         key={chk.id}
@@ -1357,10 +1357,10 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                         <div className="flex items-center space-x-2">
                           <input
                             type="checkbox"
-                            checked={checkedValue}
-                            onChange={e => handleVisualStateChange(chk.id as keyof VisualState, e.target.checked)}
+                            checked={isOk}
+                            onChange={e => handleVisualStateChange(chk.id as keyof VisualState, e.target.checked ? chk.okValue : !chk.okValue)}
                             className={`rounded border-slate-800 bg-slate-950 h-4 w-4 ${
-                              chk.negative ? "text-rose-500 focus:ring-rose-500" : "text-cyan-500 focus:ring-cyan-500"
+                              chk.okValue === false ? "text-teal-500 focus:ring-teal-500" : "text-cyan-500 focus:ring-cyan-500"
                             }`}
                           />
                           <span className="text-xs font-medium">{chk.label}</span>
