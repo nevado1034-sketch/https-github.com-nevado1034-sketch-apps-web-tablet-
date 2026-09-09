@@ -130,7 +130,13 @@ function SummaryCard({ icon: Icon, title, count, list, groupCls, subgroupCls, em
   );
 }
 
-function OrderCard({ r, onReassign }: { r: RepairItem; onReassign: (r: RepairItem) => void }) {
+interface OrderCardProps {
+  key?: React.Key;
+  r: RepairItem;
+  onReassign: (r: RepairItem) => void;
+}
+
+function OrderCard({ r, onReassign }: OrderCardProps) {
   const badge = statusBadge(r.status);
   const tech = r.assignedTech && r.assignedTech.trim();
   const total = (r.spareParts || []).reduce(

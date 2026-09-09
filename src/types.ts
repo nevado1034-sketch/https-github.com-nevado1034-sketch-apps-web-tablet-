@@ -114,6 +114,8 @@ export interface RepairItem {
   aiDiagnostic: AiDiagnostic | null;
   technicianNotes: string;
   workshopNotes?: string; // Comentario del técnico en su Mesa de Trabajo (separado del diagnóstico)
+  workshopPhotos?: string[]; // Fotos tomadas en la Mesa de Trabajo del técnico
+  workshopPhotosTaken?: boolean; // Indica si el técnico tomó fotos en su mesa de trabajo
   technicianName?: string; // Nombre del técnico responsable del diagnóstico
   diagnosisTech?: string; // Técnico que completó el diagnóstico (diagnosing -> quoted)
   assignedTech?: string; // Nombre del técnico derivado por la asesora (mesa de trabajo)

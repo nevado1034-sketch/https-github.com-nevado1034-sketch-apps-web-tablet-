@@ -15,7 +15,8 @@ const SERVICE_LABELS: Record<ServiceType, string> = {
   mantenimiento: "Mantenimiento",
   diagnostico: "Diagnóstico",
   garantia: "Garantía",
-  cambio: "Cambio / Repuesto"
+  cambio: "Cambio / Repuesto",
+  express: "Servicio Express"
 };
 
 const norm = (s?: string) => (s || "").trim().toLowerCase();

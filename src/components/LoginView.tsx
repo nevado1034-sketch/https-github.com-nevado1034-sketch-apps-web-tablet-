@@ -1,9 +1,9 @@
 import React, { useState } from "react";
 import { Lock, User, LogIn, AlertCircle, MapPin, Zap, ShieldCheck } from "lucide-react";
-import { login, SessionUser } from "../auth";
+import { findUser, loadConfig, AuthSession } from "../auth";
 
 interface LoginViewProps {
-  onLogin: (user: SessionUser) => void;
+  onLogin: (user: AuthSession) => void;
 }
 
 const CREDENTIAL_HINTS = [
@@ -26,7 +26,8 @@ export default function LoginView({ onLogin }: LoginViewProps) {
     setLoading(true);
 
     setTimeout(() => {
-      const user = login(username, password);
+      const config = loadConfig();
+      const user = config ? findUser(config, username.trim(), password) : null;
       if (!user) {
         setError("Usuario o contraseña incorrectos. Verifica tus credenciales.");
         setLoading(false);

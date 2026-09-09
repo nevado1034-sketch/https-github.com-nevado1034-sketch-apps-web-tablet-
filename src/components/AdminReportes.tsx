@@ -137,7 +137,8 @@ function expressTs(e: any): number {
   if (e.date) {
     const m = String(e.date).match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
     if (m) {
-      const d = new Date(Number(m[3] >= 100 ? m[3] : "20" + m[3]), Number(m[2]) - 1, Number(m[1]));
+      const year = Number(m[3]);
+      const d = new Date(year >= 100 ? year : Number("20" + m[3]), Number(m[2]) - 1, Number(m[1]));
       if (isFinite(d.getTime())) return d.getTime();
     }
   }

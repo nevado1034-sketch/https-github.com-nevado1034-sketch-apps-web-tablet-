@@ -503,8 +503,23 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
       try {
         const dniSync = receipt.clientDni || "";
         const phoneSync = receipt.clientPhone || "";
-        const clientRef = doc(db, "clientes", dniSync || phoneSync || correlative);
-        const existing = await getDoc(clientRef);
+        let clientRef = doc(db, "clientes", dniSync || phoneSync || correlative);
+        let existing = await getDoc(clientRef);
+        // Dedupe: si el doc con id = DNI/teléfono no existe, buscar por campo dni o phone
+        // para no crear duplicados del mismo cliente.
+        if (!existing.exists() && dniSync) {
+          const byDni = await getDocs(query(collection(db, "clientes"), where("dni", "==", dniSync), limit(1)));
+          if (!byDni.empty) {
+            clientRef = byDni.docs[0].ref;
+            existing = await getDoc(clientRef);
+          }
+        } else if (!existing.exists() && phoneSync && (existing as any)) {
+          const byPhone = await getDocs(query(collection(db, "clientes"), where("phone", "==", phoneSync), limit(1)));
+          if (!byPhone.empty) {
+            clientRef = byPhone.docs[0].ref;
+            existing = await getDoc(clientRef);
+          }
+        }
         const existingData = existing.exists() ? (existing.data() as any) : null;
         const internalId = existingData?.internalId || await nextClientId();
         const clientDoc = {

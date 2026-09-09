@@ -116,7 +116,10 @@ import {
   onSnapshot, 
   query, 
   orderBy,
-  getDoc 
+  where,
+  limit,
+  getDoc,
+  getDocs
 } from "./firebase";
 
 export default function App() {
@@ -428,16 +431,38 @@ export default function App() {
             (payload.client.dni || "").trim() || `tablet-${Date.now()}`;
           const clientDocId = phoneKey.replace(/[^a-zA-Z0-9._-]/g, "_");
           const dniStored = (payload.client.dni || "").trim();
-          const existingClient = await (async () => {
-            if (!dniStored && !phoneKey) return null;
-            if (!isFirebaseConfigured || !db) return null;
+          // Dedupe: reutilizar el doc canónico existente (por DNI o por teléfono)
+          // para no crear duplicados. No altera la estructura (subcolección local + canónico).
+          let existingRef: any = null;
+          let existingClient: any = null;
+          if (isFirebaseConfigured && db) {
             try {
-              return await getDoc(doc(db, "clientes", dniStored || clientDocId));
-            } catch {
-              return null;
+              if (dniStored) {
+                existingRef = doc(db, "clientes", dniStored);
+                existingClient = await getDoc(existingRef);
+                if (!existingClient.exists()) {
+                  const q = query(collection(db, "clientes"), where("dni", "==", dniStored), where("dni", "!=", ""), limit(1));
+                  const snap = await getDocs(q);
+                  if (!snap.empty) {
+                    existingClient = snap.docs[0];
+                    existingRef = snap.docs[0].ref;
+                  }
+                }
+              } else if (phoneKey && !phoneKey.startsWith("tablet-")) {
+                const q = query(collection(db, "clientes"), where("phone", "==", payload.client.phone), limit(1));
+                const snap = await getDocs(q);
+                if (!snap.empty) {
+                  existingClient = snap.docs[0];
+                  existingRef = snap.docs[0].ref;
+                }
+              }
+            } catch (dedupeErr) {
+              console.warn("Dedupe lookup skip:", dedupeErr);
+              existingClient = null;
+              existingRef = null;
             }
-          })();
-          const internalIdStored = existingClient?.exists()
+          }
+          const internalIdStored = existingClient?.exists?.()
             ? ((existingClient.data() as any)?.internalId as string) || ""
             : await nextClientId();
           const clientData = {
@@ -464,8 +489,13 @@ export default function App() {
           const branchKey = payload.workshopBranch || "lince_arenales";
           // Lista propia por local: cada local guarda sus clientes en su subcolección
           await setDoc(doc(db, "clientes", branchKey, "clientes", clientDocId), clientData);
-          // Espejo canónico por DNI (único por persona; evita colisiones de teléfono común)
-          await setDoc(doc(db, "clientes", dniStored || clientDocId), clientData);
+          // Espejo canónico: si ya existía el cliente (por DNI o teléfono) se actualiza ese
+          // mismo doc para no crear duplicados; si no existe se crea con docId = DNI.
+          if (existingRef) {
+            await setDoc(existingRef, clientData, { merge: true });
+          } else {
+            await setDoc(doc(db, "clientes", dniStored || clientDocId), clientData);
+          }
         } catch (clientErr) {
           console.error("Error sincronizando cliente a Firestore:", clientErr);
         }

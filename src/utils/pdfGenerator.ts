@@ -973,7 +973,7 @@ export async function downloadRepairPdf(repair: RepairItem): Promise<void> {
         html2canvas: { scale: 2, useCORS: true, letterRendering: true },
         jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
         pagebreak: { mode: ["css", "legacy"] },
-      })
+      } as any)
       .from(container)
       .save();
   } catch (e) {
