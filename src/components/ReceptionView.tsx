@@ -100,7 +100,7 @@ function SpeechToTextButton({ onResult, label }: { onResult: (text: string) => v
 const WORKSHOP_BRANCH_LABELS: Record<WorkshopBranch, string> = {
   lince_arenales: "Sede San Isidro (Av. Arenales 2584)",
   surco: "Sede Surco (Av. Santiago de Surco 4352)",
-  san_borja: "Sede San Borja (Av. Aviación 2410)",
+  san_borja: "Sede San Borja (Av. Aviación 2410 – Stand 17)",
   lince_leal: "Sede Lince (Av. Jose Leal 571)"
 };
 
@@ -1520,7 +1520,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                   </button>
                 </div>
                 <p className="text-[10px] text-slate-500 text-center mt-2.5 font-mono">
-                  Gracias por confiar en LITIO ENERGY • Av. Arenales, Surco, San Borja & Jose Leal
+                  Gracias por confiar en LITIO ENERGY • San Isidro, Lince, San Borja & Surco
                 </p>
               </div>
 

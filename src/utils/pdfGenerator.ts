@@ -921,7 +921,7 @@ export function buildRepairOrderHtml(repair: RepairItem): string {
 
       <div style="text-align: center; font-size: 8px; color: #94a3b8; margin-top: 40px; border-top: 1px solid #cbd5e1; padding-top: 10px;">
         Este documento es un comprobante técnico emitido digitalmente por el Sistema Integrado de Litio Energy en tabletas portátiles de taller.<br/>
-        LITIO ENERGY CO. — AV. ARENALES 1450, LINCE — SAN BORJA — SURCO — LIMA, PERÚ.
+        LITIO ENERGY CO. — SAN ISIDRO — LINCE — SAN BORJA — SURCO — LIMA, PERÚ.
       </div>
 
     </body>

@@ -659,7 +659,7 @@ export default function GarantiaCondiciones() {
             <ShieldCheck className="w-3.5 h-3.5" />
             <span>Documento generado por el Sistema Litio Energy</span>
           </p>
-          <p>AV. ARENALES 1450, LINCE — SAN BORJA — SURCO — LIMA, PERÚ</p>
+          <p>SAN ISIDRO — LINCE — SAN BORJA — SURCO — LIMA, PERÚ</p>
           <p className="text-slate-700">© 2026 Litio Energy · GRUPO PERÚ CREARTE S.A.C. · RUC 20611007419 · Documento de uso exclusivo del taller</p>
         </footer>
       </main>

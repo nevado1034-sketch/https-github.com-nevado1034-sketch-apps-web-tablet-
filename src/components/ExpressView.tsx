@@ -47,7 +47,7 @@ interface ExpressReceipt {
 const LOCALES = [
   { key: "lince_arenales", name: "Litio San Isidro Arenales", address: "Av. Arenales 2584, San Isidro", short: "San Isidro" },
   { key: "surco", name: "Litio Surco", address: "Av. Santiago de Surco 4352, Surco", short: "Surco" },
-  { key: "san_borja", name: "Litio San Borja", address: "Av. Aviación 2410, San Borja", short: "San Borja" },
+  { key: "san_borja", name: "Litio San Borja", address: "Av. Aviación 2410 – Stand 17, San Borja", short: "San Borja" },
   { key: "lince_leal", name: "Litio Lince Leal", address: "Av. Jose Leal 571, Lince", short: "Lince Leal" }
 ];
 
