@@ -12,9 +12,14 @@ import {
   FileText,
   ArrowRightLeft,
   X,
-  Loader2
+  Loader2,
+  ChevronDown,
+  ChevronRight,
+  History,
+  Hash,
+  Users
 } from "lucide-react";
-import { RepairItem } from "../types";
+import { RepairItem, HistoryLog } from "../types";
 import { AuthConfig, loadConfig } from "../auth";
 
 interface ControlViewProps {
@@ -314,10 +319,36 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
   const config = siteConfig || loadConfig();
   const [reassignId, setReassignId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [viewMode, setViewMode] = useState<"etapas" | "clientes">("etapas");
+  const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
 
   const localRepairs = userLocalKey
     ? repairs.filter((r) => r.workshopBranch === userLocalKey)
     : repairs;
+
+  // Agrupa las órdenes por cliente (por DNI o nombre+teléfono)
+  const clientGroups = (() => {
+    const map = new Map<string, RepairItem[]>();
+    for (const r of localRepairs) {
+      const dni = (r.client?.dni || "").trim();
+      const key = dni || `${(r.client?.name || "").trim()}|${(r.client?.phone || "").trim()}`;
+      const arr = map.get(key) || [];
+      arr.push(r);
+      map.set(key, arr);
+    }
+    return [...map.entries()]
+      .map(([key, list]) => ({ key, list: list.sort((a, b) => new Date(a.receptionDate).getTime() - new Date(b.receptionDate).getTime()) }))
+      .sort((a, b) => (a.list[0]?.client?.name || "").localeCompare(b.list[0]?.client?.name || ""));
+  })();
+
+  const toggleClient = (key: string) => {
+    setExpandedClients((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const reassigning = localRepairs.find((r) => r.id === reassignId) || null;
 
@@ -389,6 +420,37 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
         </div>
       </div>
 
+      {/* Pestañas de vista */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setViewMode("etapas")}
+          className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
+            viewMode === "etapas"
+              ? "bg-cyan-500 text-slate-950 shadow-[0_0_16px_rgba(6,182,212,0.25)]"
+              : "bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Por Etapas
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode("clientes")}
+          className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
+            viewMode === "clientes"
+              ? "bg-cyan-500 text-slate-950 shadow-[0_0_16px_rgba(6,182,212,0.25)]"
+              : "bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <Users className="w-3.5 h-3.5" />
+            Por Cliente ({clientGroups.length})
+          </span>
+        </button>
+      </div>
+
+      {viewMode === "etapas" ? (
+      <>
       <SummaryCard
         icon={Wrench}
         title="En Diagnóstico"
@@ -432,6 +494,129 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
         empty="No hay vehículos en reparación."
         onReassign={(r) => setReassignId(r.id)}
       />
+      </>
+
+      ) : (
+
+      /* VISTA POR CLIENTE: ACORDEONES CON TODO EL PROCESO DE CADA CLIENTE */
+      <div className="space-y-4">
+        {clientGroups.length === 0 && (
+          <div className="py-10 text-center text-sm text-slate-500">
+            No hay órdenes registradas para este local.
+          </div>
+        )}
+
+        {clientGroups.map(({ key, list }) => {
+          const client = list[0]?.client;
+          const isOpen = expandedClients.has(key);
+          const totalSpend = list.reduce(
+            (sum, r) => sum + (r.spareParts || []).reduce(
+              (s2, p) => s2 + (Number(p.partPrice) || 0) + (Number(p.laborPrice) || 0),
+              0
+            ),
+            0
+          );
+          return (
+            <section key={key} className="rounded-2xl overflow-hidden border border-slate-800 bg-slate-900/60">
+              <button
+                type="button"
+                onClick={() => toggleClient(key)}
+                className="w-full flex items-center justify-between gap-3 px-4 py-3.5 bg-slate-900 hover:bg-slate-850 transition-colors text-left"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center space-x-2">
+                    {isOpen ? (
+                      <ChevronDown className="w-4 h-4 text-cyan-400 shrink-0" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+                    )}
+                    <span className="font-display font-black text-sm text-white truncate">
+                      {client?.name || "Cliente"}
+                    </span>
+                    <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${list.length > 1 ? "bg-cyan-500/15 text-cyan-300 border border-cyan-500/30" : "bg-slate-800 text-slate-400 border border-slate-700"}`}>
+                      {list.length} {list.length === 1 ? "orden" : "órdenes"}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 mt-1.5 text-[10px]">
+                    {client?.dni && (
+                      <span className="inline-flex items-center space-x-1 bg-slate-950 border border-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-mono">
+                        <Hash className="w-3 h-3" />
+                        <span>{client.dni}</span>
+                      </span>
+                    )}
+                    {client?.phone && (
+                      <span className="inline-flex items-center space-x-1 bg-slate-950 border border-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-mono">
+                        <Phone className="w-3 h-3" />
+                        <span>{client.phone}</span>
+                      </span>
+                    )}
+                    <span className="inline-flex items-center space-x-1 bg-slate-950 border border-slate-800 text-amber-400 px-2 py-0.5 rounded-full font-black">
+                      <FileText className="w-3 h-3" />
+                      <span>S/ {totalSpend.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    </span>
+                  </div>
+                </div>
+              </button>
+
+              {isOpen && (
+                <div className="p-3 pt-0 space-y-3 bg-slate-950/40">
+                  {list.map((r) => {
+                    const badge = statusBadge(r.status);
+                    return (
+                      <div key={r.id} className="bg-slate-900 rounded-xl border border-slate-800 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-mono font-bold text-xs text-white bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">{r.id}</span>
+                            <span className="text-[11px] text-slate-300 font-bold">
+                              {typeLabels[r.vehicle?.type || ""] || r.vehicle?.type || ""} {r.vehicle?.brand || ""} {r.vehicle?.model || ""}
+                            </span>
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${badge.cls}`}>{badge.label}</span>
+                          </div>
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {new Date(r.receptionDate).toLocaleDateString()}
+                          </span>
+                        </div>
+
+                        {r.vehicle?.reportedFailure && (
+                          <p className="text-[11px] text-slate-400 mt-1.5 italic bg-slate-950/40 border border-slate-850/40 rounded-lg px-2.5 py-1.5">
+                            Falla: {r.vehicle.reportedFailure}
+                          </p>
+                        )}
+
+                        <div className="mt-2.5 flex items-center space-x-2 text-[10px] font-black uppercase tracking-wider text-slate-400 border-t border-slate-800 pt-2.5">
+                          <History className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Historial de Transiciones</span>
+                        </div>
+
+                        <div className="mt-2.5 space-y-2.5">
+                          {(r.historyLog || []).slice().reverse().map((log: HistoryLog) => (
+                            <div key={log.id} className="flex items-start space-x-2.5 text-xs leading-relaxed">
+                              <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.6)] shrink-0 mt-1.5 animate-pulse"></div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-semibold text-slate-200">{log.description}</span>
+                                  <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                                    {new Date(log.date).toLocaleDateString()} {new Date(log.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-slate-400">Operador: <strong className="text-slate-300">{log.user}</strong></p>
+                              </div>
+                            </div>
+                          ))}
+                          {(!r.historyLog || r.historyLog.length === 0) && (
+                            <p className="text-[10px] text-slate-500 italic">Sin transiciones registradas.</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+      )}
 
       {reassigning && (
         <ReassignModal
