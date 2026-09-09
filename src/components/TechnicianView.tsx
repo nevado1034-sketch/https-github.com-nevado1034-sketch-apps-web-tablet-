@@ -109,6 +109,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   // Fotos y videos tomados durante el trabajo en Mesa de Trabajo
   const [mesaPhotos, setMesaPhotos] = useState<string[]>([]);
   const [mesaVideos, setMesaVideos] = useState<RecordedVideo[]>([]);
+  const [mesaPreviewUrl, setMesaPreviewUrl] = useState<string | null>(null); // URL temporal de blob para reproducir videos de mesa pendientes
 
   const activeRepair = repairs.find(r => r.id === selectedId);
 
@@ -126,12 +127,12 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     }
   }, [techMode, repairs, selectedId, userName, userRole]);
 
-  // En modo Reparación, la vista trabaja sobre órdenes en "repairing" (en taller)
-  // y "testing" (enviadas a Control de Calidad, bloqueadas).
-  // Cuando una orden es aprobada (ready) o entregada (delivered), se deselecciona.
+  // En modo Reparación, la vista trabaja sobre órdenes en "repairing" (en taller).
+  // Cuando una orden es enviada a Control de Calidad (testing) o aprobada (ready)
+  // o entregada (delivered), se deselecciona y desaparece de la Mesa de Trabajo.
   React.useEffect(() => {
     if (techMode === "reparacion") {
-      const queue = repairs.filter(r => (r.status === "repairing" || r.status === "testing") && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole));
+      const queue = repairs.filter(r => r.status === "repairing" && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole));
       const isCurrentInQueue = selectedId && queue.some(r => r.id === selectedId);
       if (queue.length > 0 && !isCurrentInQueue) {
         setSelectedId(queue[0].id);
@@ -258,6 +259,24 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     } catch (err) {
       console.error(err);
       alert("Error al guardar notas de taller.");
+    }
+  };
+
+  // Navegación del lightbox de evidencia: ver foto o reproducir video de la Mesa de Trabajo
+  const openMesaProof = (type: "photo" | "video", src: string, label: string) => {
+    revokeMesaPreview();
+    setReceptionProof({ type, src, label });
+  };
+  const openMesaVideoBlob = (video: RecordedVideo, label: string) => {
+    revokeMesaPreview();
+    const url = URL.createObjectURL(video.blob);
+    setMesaPreviewUrl(url);
+    setReceptionProof({ type: "video", src: url, label });
+  };
+  const revokeMesaPreview = () => {
+    if (mesaPreviewUrl) {
+      URL.revokeObjectURL(mesaPreviewUrl);
+      setMesaPreviewUrl(null);
     }
   };
 
@@ -510,7 +529,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
             Mesa de Trabajo
           </span>
           <span className="text-[10px] text-slate-500 font-mono mt-0.5">
-            {repairs.filter(r => r.status !== "receptioned" && r.status !== "diagnosing" && r.status !== "delivered" && matchesAssignedTech(r.assignedTech, userName, userRole)).length} vehículos en taller
+            {repairs.filter(r => r.status === "repairing" && matchesAssignedTech(r.assignedTech, userName, userRole)).length} vehículos en taller
           </span>
         </button>
       </div>
@@ -1068,7 +1087,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
               <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
                 <h3 className="font-display font-bold text-sm uppercase tracking-wider text-slate-300">Cola de Trabajo de Taller</h3>
                 <span className="text-xs bg-slate-800 text-slate-400 px-2.5 py-1 rounded-full font-mono font-bold">
-                  {repairs.filter(r => r.status !== "delivered" && matchesAssignedTech(r.assignedTech, userName, userRole)).length} Activos
+                  {repairs.filter(r => techMode === "reparacion" ? (r.status === "repairing" && hasAssignedTech(r) && matchesAssignedTech(r.assignedTech, userName, userRole)) : (r.status !== "delivered" && matchesAssignedTech(r.assignedTech, userName, userRole))).length} Activos
                 </span>
               </div>
 
@@ -1432,10 +1451,22 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                                   key={idx}
                                   className="relative flex flex-col items-center justify-center gap-1 rounded-lg border border-blue-800/40 bg-slate-950 p-3 text-center"
                                 >
-                                  <Video className="w-5 h-5 text-blue-400" />
-                                  <span className="text-[9px] font-mono text-slate-400">
-                                    {v.durationSec}s  {(v.sizeBytes / 1024 / 1024).toFixed(2)} MB
-                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => openMesaVideoBlob(v, `Video de Mesa de Trabajo ${idx + 1}`)}
+                                    className="flex flex-col items-center justify-center gap-1 cursor-pointer group"
+                                    title="Ver video de mesa de trabajo"
+                                  >
+                                    <span className="w-9 h-9 bg-blue-500/10 border border-blue-500/30 rounded-full flex items-center justify-center group-hover:bg-blue-500/25 transition-colors">
+                                      <Video className="w-5 h-5 text-blue-400" />
+                                    </span>
+                                    <span className="text-[9px] font-mono text-slate-400 group-hover:text-blue-300">
+                                      {v.durationSec}s  {(v.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                                    </span>
+                                    <span className="text-[8px] uppercase font-black tracking-wider text-blue-400/80 group-hover:text-blue-300">
+                                      Reproducir
+                                    </span>
+                                  </button>
                                   <button
                                     type="button"
                                     onClick={() => setMesaVideos(prev => prev.filter((_, i) => i !== idx))}
@@ -1460,7 +1491,14 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
                           {mesaPhotos.map((url, idx) => (
                             <div key={idx} className="relative rounded-lg overflow-hidden border border-slate-800 bg-slate-900 group">
-                              <img src={url} alt={`Mesa ${idx + 1}`} className="w-full h-16 object-cover" />
+                              <button
+                                type="button"
+                                onClick={() => openMesaProof("photo", url, `Foto de Mesa de Trabajo ${idx + 1}`)}
+                                className="block w-full h-16 cursor-pointer"
+                                title="Ampliar foto de mesa de trabajo"
+                              >
+                                <img src={url} alt={`Mesa ${idx + 1}`} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => setMesaPhotos(prev => prev.filter((_, i) => i !== idx))}
@@ -1474,6 +1512,39 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         </div>
                       </div>
                     )}
+
+                    {(() => {
+                      const savedVideos = (activeRepair.visualState.videoEvidence || []).filter((ve) => ve.recordedBy !== "Recepcionista Litio");
+                      if (savedVideos.length === 0) return null;
+                      return (
+                        <div>
+                          <p className="text-[10px] uppercase font-black text-emerald-500/80 tracking-wider mb-1.5">
+                            Videos del técnico subidos a la nube ({savedVideos.length})
+                          </p>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                            {savedVideos.map((ve, idx) => (
+                              <button
+                                key={ve.url}
+                                type="button"
+                                onClick={() => openMesaProof("video", ve.url, `Video respaldo de mesa ${idx + 1}${ve.durationSec ? ` (${Math.round(ve.durationSec)}s)` : ""}`)}
+                                className="relative flex flex-col items-center justify-center gap-1 rounded-lg border border-emerald-800/40 bg-slate-950 p-3 text-center cursor-pointer group hover:border-emerald-500/50 transition-colors"
+                                title="Ver video de mesa subido a la nube"
+                              >
+                                <span className="w-9 h-9 bg-emerald-500/10 border border-emerald-500/30 rounded-full flex items-center justify-center group-hover:bg-emerald-500/25 transition-colors">
+                                  <Video className="w-5 h-5 text-emerald-400" />
+                                </span>
+                                <span className="text-[8px] font-mono text-slate-400">
+                                  {ve.durationSec ? `${Math.round(ve.durationSec)}s` : "nube"} · {ve.recordedBy}
+                                </span>
+                                <span className="text-[8px] uppercase font-black tracking-wider text-emerald-400/80 group-hover:text-emerald-300">
+                                  Reproducir
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
 
@@ -1870,12 +1941,12 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         </div>
       )}
 
-      {/* Lightbox de evidencia registrada en recepción */}
+      {/* Lightbox de evidencia registrada en recepción y de Mesa de Trabajo */}
       {receptionProof && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/95 p-4" onClick={() => setReceptionProof(null)}>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/95 p-4" onClick={() => { setReceptionProof(null); revokeMesaPreview(); }}>
           <div className="relative w-full max-w-4xl" onClick={(e) => e.stopPropagation()}>
             <button
-              onClick={() => setReceptionProof(null)}
+              onClick={() => { setReceptionProof(null); revokeMesaPreview(); }}
               className="absolute -top-10 right-0 text-slate-400 hover:text-white text-sm font-bold px-3 py-1"
             >
               ✕ Cerrar
