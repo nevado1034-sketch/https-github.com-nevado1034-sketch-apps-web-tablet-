@@ -34,7 +34,8 @@ import {
   CloudDownload,
   Mic,
   Play,
-  Zap
+  Zap,
+  MessageCircle
 } from "lucide-react";
 import { RepairItem, VehicleType, VisualState, Accessories, WorkshopBranch, ServiceType } from "../types";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
@@ -560,7 +561,21 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [createdId, setCreatedId] = useState("");
   const [lastCreatedRepair, setLastCreatedRepair] = useState<RepairItem | null>(null);
+  const [waSending, setWaSending] = useState(false);
   const submittingRef = React.useRef(false);
+
+  const buildWelcomeWaUrl = (r: RepairItem): string => {
+    const phone = (r.client?.phone || "").replace(/[^\d]/g, "");
+    const waPhone = phone ? (phone.startsWith("51") ? phone : phone.length === 9 ? "51" + phone : phone) : "";
+    return `https://wa.me/${waPhone}?text=${encodeURIComponent(buildWelcomeMessage(r))}`;
+  };
+
+  const sendWelcomeWa = async () => {
+    if (!lastCreatedRepair || waSending) return;
+    setWaSending(true);
+    window.open(buildWelcomeWaUrl(lastCreatedRepair), "_blank");
+    setTimeout(() => setWaSending(false), 1500);
+  };
 
   const buildWelcomeMessage = (r: RepairItem): string => {
     const typeLabels: Record<string, string> = {
@@ -657,15 +672,6 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
       }
       setSubmitSuccess(true);
 
-      if (created) {
-        const phone = (created.client?.phone || "").replace(/[^\d]/g, "");
-        if (phone) {
-          const waPhone = phone.startsWith("51") ? phone : phone.length === 9 ? "51" + phone : phone;
-          const message = buildWelcomeMessage(created);
-          window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(message)}`, "_blank");
-        }
-      }
-      
       // Reset form
       setClientName("");
       setClientPhone("");
@@ -763,14 +769,25 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
             </div>
           </div>
           {lastCreatedRepair && (
-            <button
-              type="button"
-              onClick={() => generateRepairPdf(lastCreatedRepair)}
-              className="flex items-center space-x-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all self-start sm:self-center shrink-0 cursor-pointer shadow-lg hover:shadow-emerald-500/20"
-            >
-              <Printer className="w-4 h-4" />
-              <span>Imprimir Ficha de Conformidad</span>
-            </button>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={sendWelcomeWa}
+                disabled={waSending}
+                className="flex items-center justify-center space-x-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all self-start sm:self-center cursor-pointer shadow-lg hover:shadow-emerald-500/20 disabled:opacity-50 disabled:cursor-default"
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span>{waSending ? "Abriendo WhatsApp..." : "Enviar WhatsApp de Bienvenida"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => generateRepairPdf(lastCreatedRepair)}
+                className="flex items-center justify-center space-x-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-all self-start sm:self-center shrink-0 cursor-pointer shadow-lg"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Imprimir Ficha de Conformidad</span>
+              </button>
+            </div>
           )}
         </div>
       )}
