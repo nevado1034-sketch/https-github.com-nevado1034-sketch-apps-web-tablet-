@@ -99,17 +99,21 @@ export function sessionLabel(s: AuthSession): string {
   return base;
 }
 
+function normName(s: string): string {
+  return s.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
 export function findUser(config: AuthConfig, name: string, clave: string): AuthSession | null {
-  const cleanName = name.trim().toLowerCase();
-  if (config.admin.name.trim().toLowerCase() === cleanName && config.admin.clave === clave) {
+  const cleanName = normName(name);
+  if (normName(config.admin.name) === cleanName && config.admin.clave === clave) {
     return { role: "admin", name: config.admin.name.trim() };
   }
   for (const loc of config.locales) {
-    if (loc.jefa.name.trim().toLowerCase() === cleanName && loc.jefa.clave === clave) {
+    if (normName(loc.jefa.name) === cleanName && loc.jefa.clave === clave) {
       return { role: "jefa", name: loc.jefa.name.trim(), localKey: loc.key };
     }
     for (const t of loc.tecnicos) {
-      if (t.name.trim().toLowerCase() === cleanName && t.clave === clave) {
+      if (normName(t.name) === cleanName && t.clave === clave) {
         return { role: "tecnico", name: t.name.trim(), localKey: loc.key };
       }
     }
