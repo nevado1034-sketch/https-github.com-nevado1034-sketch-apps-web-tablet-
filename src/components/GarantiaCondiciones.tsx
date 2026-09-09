@@ -1,13 +1,15 @@
 import React from "react";
 import { ShieldCheck, ArrowLeft } from "lucide-react";
 import litioLogo from "../assets/litio-logo.png";
+import CopyProtected from "./CopyProtected";
 
 const sectionStyle = "text-[11px] text-slate-300 leading-relaxed space-y-2";
 
 export default function GarantiaCondiciones() {
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
-      <header className="bg-slate-900 border-b border-slate-800 px-5 py-4 flex items-center justify-between">
+    <CopyProtected>
+      <div className="min-h-screen bg-transparent">
+        <header className="bg-slate-900 border-b border-slate-800 px-5 py-4 flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <div className="flex items-center justify-center overflow-hidden drop-shadow-[0_0_12px_rgba(6,182,212,0.4)] shrink-0">
             <img src={litioLogo} alt="Isotipo Litio Energy" className="w-14 h-14 object-contain" draggable={false} />
@@ -658,8 +660,10 @@ export default function GarantiaCondiciones() {
             <span>Documento generado por el Sistema Litio Energy</span>
           </p>
           <p>AV. ARENALES 1450, LINCE — SAN BORJA — SURCO — LIMA, PERÚ</p>
+          <p className="text-slate-700">© 2026 Litio Energy · GRUPO PERÚ CREARTE S.A.C. · RUC 20611007419 · Documento de uso exclusivo del taller</p>
         </footer>
       </main>
-    </div>
+      </div>
+    </CopyProtected>
   );
 }
