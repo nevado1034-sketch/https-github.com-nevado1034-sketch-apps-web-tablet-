@@ -4,39 +4,46 @@
 #   winget install Google.CloudSDK   (en Windows)
 #   gcloud auth login
 #   gcloud config set project litio-energy
+# NOTA: si PowerShell bloquea gcloud.ps1, usar gcloud.cmd explícitamente.
 # ─────────────────────────────────────────────────────────────────────────────
 
 $Project = "litio-energy"
 $Database = "(default)"
+$gcloudBin = "C:\Users\PC\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
+if (Test-Path $gcloudBin) {
+  $g = $gcloudBin
+} else {
+  $g = "gcloud"
+}
 
 Write-Host "Proyecto: $Project" -ForegroundColor Cyan
 
 # ── 1. Verificar autenticación y API habilitadas ─────────────────────────────
-gcloud auth list
-gcloud services enable firestore.googleapis.com --project=$Project
+& $g auth list
+& $g services enable firestore.googleapis.com --project=$Project
 
 # ── 2. Backup diario de Firestore, retención 30 días ─────────────────────────
-# Los backups administrados de Firestore se guardan automáticos sin bucket manual.
 Write-Host "Creando schedule de backup DIARIO (retencion 30d)..." -ForegroundColor Yellow
-gcloud firestore backups schedules create `
+& $g firestore backups schedules create `
   --database=$Database `
   --project=$Project `
-  --recurrence=DAILY `
+  --recurrence=daily `
   --retention=30d
 
-# Backups semanales adicionales con retención de 6 meses (punto de restauración a largo plazo)
-Write-Host "Creando schedule de backup SEMANAL (retencion 180d)..." -ForegroundColor Yellow
-gcloud firestore backups schedules create `
+# Backup semanal los domingos (máximo soportado: 14 semanas = 98 días)
+Write-Host "Creando schedule de backup SEMANAL domingo (retencion 98d)..." -ForegroundColor Yellow
+& $g firestore backups schedules create `
   --database=$Database `
   --project=$Project `
-  --recurrence=WEEKLY `
-  --retention=180d
+  --recurrence=weekly `
+  --day-of-week=SUNDAY `
+  --retention=98d
 
 # ── 3. Verificar ─────────────────────────────────────────────────────────────
 Write-Host "Schedules activos:" -ForegroundColor Green
-gcloud firestore backups schedules list --database=$Database --project=$Project
+& $g firestore backups schedules list --database=$Database --project=$Project
 Write-Host "Backups existentes:" -ForegroundColor Green
-gcloud firestore backups list --database=$Database --project=$Project
+& $g firestore backups list --project=$Project
 
 Write-Host ""
 Write-Host "✔ Backups configurados. El primer backup se toma automaticamente." -ForegroundColor Green
