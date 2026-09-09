@@ -454,6 +454,13 @@ export default function App() {
                 if (!snap.empty) {
                   existingClient = snap.docs[0];
                   existingRef = snap.docs[0].ref;
+                } else {
+                  const q2 = query(collection(db, "clientes"), where("phone2", "==", payload.client.phone), limit(1));
+                  const snap2 = await getDocs(q2);
+                  if (!snap2.empty) {
+                    existingClient = snap2.docs[0];
+                    existingRef = snap2.docs[0].ref;
+                  }
                 }
               }
             } catch (dedupeErr) {
@@ -465,10 +472,39 @@ export default function App() {
           const internalIdStored = existingClient?.exists?.()
             ? ((existingClient.data() as any)?.internalId as string) || ""
             : await nextClientId();
+
+          // Consolidación de teléfonos: conservar el teléfono principal original y
+          // guardar cualquier número nuevo como phone2, sin crear otro documento.
+          let phoneValue = String(payload.client.phone || "").trim();
+          let phone2Value = "";
+          const newPhone = String(payload.client.phone || "").trim();
+          try {
+            const existingData = existingClient?.exists?.() ? (existingClient.data() as any) : null;
+            const existingPhone = String(existingData?.phone || "").trim();
+            const existingPhone2 = String(existingData?.phone2 || "").trim();
+            if (existingPhone) {
+              phoneValue = existingPhone;
+              if (newPhone && newPhone !== existingPhone && newPhone !== existingPhone2) {
+                phone2Value = newPhone;
+              } else {
+                phone2Value = existingPhone2;
+              }
+            } else if (existingPhone2) {
+              if (newPhone && newPhone !== existingPhone2) {
+                phoneValue = existingPhone2;
+                phone2Value = newPhone;
+              } else {
+                phoneValue = existingPhone2;
+              }
+            }
+          } catch {
+            // si falla la lectura conserva el teléfono del formulario
+          }
+
           const clientData = {
             internalId: internalIdStored,
             name: payload.client.name || "",
-            phone: payload.client.phone || "",
+            phone: phoneValue,
             dni: dniStored || phoneKey,
             email: payload.client.email || "",
             vehicleType: typeToLabel[payload.vehicle.type] || "Scooter",
@@ -486,9 +522,19 @@ export default function App() {
             source: "tablet",
             createdAt: Date.now()
           };
+          if (phone2Value) (clientData as any).phone2 = phone2Value;
           const branchKey = payload.workshopBranch || "lince_arenales";
-          // Lista propia por local: cada local guarda sus clientes en su subcolección
-          await setDoc(doc(db, "clientes", branchKey, "clientes", clientDocId), clientData);
+          // Lista propia por local: cada local guarda sus clientes en su subcolección.
+          // Si el cliente ya existe en el local (mismo DNI) se reutiliza su documento.
+          let localClientRef = doc(db, "clientes", branchKey, "clientes", clientDocId);
+          if (isFirebaseConfigured && db && dniStored) {
+            try {
+              const localQ = query(collection(db, "clientes", branchKey, "clientes"), where("dni", "==", dniStored), limit(1));
+              const localSnap = await getDocs(localQ);
+              if (!localSnap.empty) localClientRef = localSnap.docs[0].ref;
+            } catch {}
+          }
+          await setDoc(localClientRef, clientData, { merge: true });
           // Espejo canónico: si ya existía el cliente (por DNI o teléfono) se actualiza ese
           // mismo doc para no crear duplicados; si no existe se crea con docId = DNI.
           if (existingRef) {

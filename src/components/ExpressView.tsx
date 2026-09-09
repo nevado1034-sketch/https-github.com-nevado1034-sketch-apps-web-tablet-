@@ -505,7 +505,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
         const phoneSync = receipt.clientPhone || "";
         let clientRef = doc(db, "clientes", dniSync || phoneSync || correlative);
         let existing = await getDoc(clientRef);
-        // Dedupe: si el doc con id = DNI/teléfono no existe, buscar por campo dni o phone
+        // Dedupe: si el doc con id = DNI/teléfono no existe, buscar por campo dni, phone o phone2
         // para no crear duplicados del mismo cliente.
         if (!existing.exists() && dniSync) {
           const byDni = await getDocs(query(collection(db, "clientes"), where("dni", "==", dniSync), limit(1)));
@@ -518,20 +518,37 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
           if (!byPhone.empty) {
             clientRef = byPhone.docs[0].ref;
             existing = await getDoc(clientRef);
+          } else {
+            const byPhone2 = await getDocs(query(collection(db, "clientes"), where("phone2", "==", phoneSync), limit(1)));
+            if (!byPhone2.empty) {
+              clientRef = byPhone2.docs[0].ref;
+              existing = await getDoc(clientRef);
+            }
           }
         }
         const existingData = existing.exists() ? (existing.data() as any) : null;
         const internalId = existingData?.internalId || await nextClientId();
-        const clientDoc = {
+        // Consolidación de teléfonos: conservar el principal original y guardar el
+        // número nuevo como phone2 en el mismo documento (sin crear otro ID).
+        let phoneMain = phoneSync;
+        let phoneExtra = existingData?.phone2 || "";
+        if (existingData?.phone) {
+          phoneMain = String(existingData.phone).trim();
+          if (phoneSync && phoneSync !== phoneMain && phoneSync !== String(existingData.phone2 || "").trim()) {
+            phoneExtra = phoneSync;
+          }
+        }
+        const clientDoc: any = {
           internalId,
           name: receipt.clientName || "",
-          phone: phoneSync,
+          phone: phoneMain,
           dni: dniSync,
           vehicleType: receipt.vehicleType || "",
-          source: "express",
+          source: existingData?.source === "tablet" ? "tablet" : "express",
           createdAt: existingData?.createdAt || Date.now(),
           updatedAt: Date.now()
         };
+        if (phoneExtra) clientDoc.phone2 = phoneExtra;
         await setDoc(clientRef, clientDoc, { merge: true });
       } catch (e) {
         console.error("Error sincronizando cliente Express:", e);
