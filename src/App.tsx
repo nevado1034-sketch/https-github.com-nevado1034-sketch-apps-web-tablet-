@@ -771,7 +771,7 @@ export default function App() {
         allowedTabs={allowedTabs}
         currentUser={session}
         qcCount={visibleRepairs.filter((r) => r.status === "testing").length}
-        presupuestoCount={visibleRepairs.filter((r) => r.status !== "delivered" && r.status !== "ready" && !(r.serviceType === "garantia" && r.warrantyCovered)).length}
+        presupuestoCount={visibleRepairs.filter((r) => (r.status === "quoted" || r.status === "paid") && !(r.serviceType === "garantia" && r.warrantyCovered)).length}
         onLogout={() => {
           clearSession();
           setSession(null);
