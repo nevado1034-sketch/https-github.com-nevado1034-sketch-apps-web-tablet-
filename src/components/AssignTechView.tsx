@@ -51,6 +51,9 @@ export default function AssignTechView({ repairs, onUpdateRepair, userLocalKey, 
         technicianName: "Téc. " + matched,
         assignedByName: userName || "Asesora de Servicio"
       };
+      if (target === "diagnosing") {
+        patch.status = "diagnosing";
+      }
       if (target === "repairing") {
         patch.status = "repairing";
       }

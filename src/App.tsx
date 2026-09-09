@@ -384,7 +384,7 @@ export default function App() {
             videoRecorded: videoEvidence.length > 0,
             videoEvidence
           },
-          status: "diagnosing",
+          status: "receptioned",
           source: "tablet",
           aiDiagnostic: payload.aiDiagnostic || null,
           technicianNotes: "",
@@ -399,8 +399,8 @@ export default function App() {
             {
               id: `log_${Date.now()}`,
               date: new Date().toISOString(),
-              status: "diagnosing",
-              description: "Vehiculo ingresado a taller. Pasa automaticamente a diagnostico.",
+              status: "receptioned",
+              description: "Vehiculo ingresado a taller. En espera de derivacion al tecnico para diagnostico.",
               user: "Asesora de Servicio Litio"
             }
           ]

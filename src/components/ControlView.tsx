@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import {
   ClipboardList,
   Wrench,
+  Clock,
   User,
   UserX,
   Timer,
@@ -373,7 +374,11 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
   };
 
   const diagnostico = localRepairs
-    .filter((r) => r.status === "receptioned" || r.status === "diagnosing")
+    .filter((r) => r.status === "diagnosing")
+    .sort((a, b) => new Date(stageStart(a)).getTime() - new Date(stageStart(b)).getTime());
+
+  const espera = localRepairs
+    .filter((r) => r.status === "receptioned")
     .sort((a, b) => new Date(stageStart(a)).getTime() - new Date(stageStart(b)).getTime());
 
   const aprobados = localRepairs
@@ -405,6 +410,9 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
           </p>
         </div>
         <div className="flex items-center space-x-2">
+          <span className="px-2.5 py-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-300 text-[11px] font-black">
+            {espera.length} en espera
+          </span>
           <span className="px-2.5 py-1.5 rounded-full bg-purple-500/10 border border-purple-500/25 text-purple-300 text-[11px] font-black">
             {diagnostico.length} en diagnóstico
           </span>
@@ -451,6 +459,17 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
 
       {viewMode === "etapas" ? (
       <>
+      <SummaryCard
+        icon={Clock}
+        title="En Espera"
+        count={espera.length}
+        list={espera}
+        groupCls="border-cyan-500/25 shadow-[0_0_20px_rgba(6,182,212,0.06)]"
+        subgroupCls="text-cyan-400/80"
+        empty="No hay vehículos en espera de derivación."
+        onReassign={(r) => setReassignId(r.id)}
+      />
+
       <SummaryCard
         icon={Wrench}
         title="En Diagnóstico"
