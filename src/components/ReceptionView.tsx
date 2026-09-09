@@ -574,7 +574,10 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
     if (!lastCreatedRepair || waSending) return;
     setWaSending(true);
     window.open(buildWelcomeWaUrl(lastCreatedRepair), "_blank");
-    setTimeout(() => setWaSending(false), 1500);
+    setTimeout(() => {
+      setWaSending(false);
+      setSubmitSuccess(false);
+    }, 500);
   };
 
   const buildWelcomeMessage = (r: RepairItem): string => {
@@ -697,10 +700,6 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
       setClientSignatureName("");
       setClientSignature("");
       setTallerSignature("");
-      
-      setTimeout(() => {
-        setSubmitSuccess(false);
-      }, 15000);
     } catch (err) {
       console.error(err);
       alert("Error al ingresar vehículo a taller.");
@@ -755,7 +754,15 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
     <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
       {/* Mensaje de Éxito al Enviar */}
       {submitSuccess && (
-        <div className="mb-6 p-4 bg-emerald-950/40 border-l-4 border-emerald-500 rounded-r-xl shadow-sm animate-fade-in flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="relative mb-6 p-4 bg-emerald-950/40 border-l-4 border-emerald-500 rounded-r-xl shadow-sm animate-fade-in flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <button
+            type="button"
+            onClick={() => setSubmitSuccess(false)}
+            className="absolute -top-2 -right-2 w-7 h-7 rounded-full bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 flex items-center justify-center transition-colors cursor-pointer"
+            title="Cerrar"
+          >
+            <X className="w-4 h-4" />
+          </button>
           <div className="flex items-start space-x-3">
             <div className="p-2 bg-emerald-500 rounded-lg text-slate-950 shrink-0">
               <Check className="w-5 h-5" />

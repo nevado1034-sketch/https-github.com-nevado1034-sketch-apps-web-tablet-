@@ -107,7 +107,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
   const [sendingWa, setSendingWa] = useState<string | null>(null);
 
   const diagnosed = repairs
-    .filter((r) => r.status !== "delivered" && r.status !== "ready")
+    .filter((r) => r.status === "quoted" || r.status === "paid")
     .filter((r) => !(r.serviceType === "garantia" && r.warrantyCovered))
     .sort((a, b) => new Date(b.receptionDate).getTime() - new Date(a.receptionDate).getTime());
 
