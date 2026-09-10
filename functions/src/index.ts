@@ -7,8 +7,6 @@ import * as adminDefault from "firebase-admin";
 adminDefault.initializeApp();
 
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1V469eNmCQOai6by6_wmmguRrRg6WoHJt8IN1bo5e4gw";
-const RANGE_CLIENTES = "Clientes!A:H";
-const RANGE_ORDENES = "Ordenes!A:M";
 
 let sheetsClient: ReturnType<typeof google.sheets> | null = null;
 
@@ -30,18 +28,6 @@ async function getSheets() {
   return sheetsClient;
 }
 
-async function findRowById(sheets: ReturnType<typeof google.sheets>, range: string, id: string, idCol = 0): Promise<number | null> {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range,
-  });
-  const rows = res.data.values || [];
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i][idCol] === id) return i + 1;
-  }
-  return null;
-}
-
 async function ensureSheetExists(sheets: ReturnType<typeof google.sheets>, title: string) {
   const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
   const titles = (meta.data.sheets || []).map((s: any) => s.properties?.title);
@@ -52,17 +38,17 @@ async function ensureSheetExists(sheets: ReturnType<typeof google.sheets>, title
   });
 }
 
-async function ensureHeader(sheets: ReturnType<typeof google.sheets>, range: string, headers: string[]) {
-  const res = await sheets.spreadsheets.values.get({
+async function replaceSheet(sheets: ReturnType<typeof google.sheets>, tab: string, rows: any[][]) {
+  await sheets.spreadsheets.values.clear({
     spreadsheetId: SPREADSHEET_ID,
-    range,
+    range: `${tab}!A1:ZZ`,
   });
-  if (!res.data.values || res.data.values.length === 0) {
+  if (rows.length) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range,
+      range: `${tab}!A1`,
       valueInputOption: "RAW",
-      requestBody: { values: [headers] },
+      requestBody: { values: rows },
     });
   }
 }
@@ -85,56 +71,28 @@ export const syncClienteToSheet = onDocumentWritten("clientes/{clienteId}", asyn
 
   try {
     const sheets = await getSheets();
-    const id = event.params.clienteId;
-
     await ensureSheetExists(sheets, "Clientes");
-    await ensureHeader(sheets, RANGE_CLIENTES, [
-      "ID", "Nombre", "Teléfono", "DNI", "Sede", "Dirección", "Fecha Registro", "Última Actualización"
-    ]);
 
-    const change = event.data;
-    if (!change) return;
+    const snap = await adminDefault.firestore().collection("clientes").get();
+    const docs = snap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as any) }))
+      .filter((c) => c.archived !== true && !c.mergedInto)
+      .sort((a, b) => String(a.internalId || a.id).localeCompare(String(b.internalId || b.id)));
 
-    if (!change.after.exists) {
-      const rowNum = await findRowById(sheets, RANGE_CLIENTES, id);
-      if (rowNum) {
-        await sheets.spreadsheets.values.clear({
-          spreadsheetId: SPREADSHEET_ID,
-          range: `Clientes!A${rowNum}:H${rowNum}`,
-        });
-      }
-      return;
-    }
+    const rows = [
+      ["ID", "Nombre", "Teléfono", "DNI", "Sede", "Dirección", "Fecha Registro", "Última Actualización"]
+    ].concat(docs.map((c) => [
+      c.internalId || c.id,
+      c.name || "",
+      c.phone || "",
+      c.dni || "",
+      c.workshopBranch || "",
+      c.address || "",
+      formatDate(c.createdAt),
+      formatDate(c.updatedAt),
+    ]));
 
-    const data = change.after.data()!;
-    const row = [
-      data.internalId || id,
-      data.name || "",
-      data.phone || "",
-      data.dni || "",
-      data.workshopBranch || "",
-      data.address || "",
-      formatDate(data.createdAt),
-      formatDate(data.updatedAt),
-    ];
-
-    const rowNum = await findRowById(sheets, RANGE_CLIENTES, id);
-    if (rowNum) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `Clientes!A${rowNum}:H${rowNum}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [row] },
-      });
-    } else {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: RANGE_CLIENTES,
-        valueInputOption: "RAW",
-        insertDataOption: "INSERT_ROWS",
-        requestBody: { values: [row] },
-      });
-    }
+    await replaceSheet(sheets, "Clientes", rows);
   } catch (err) {
     console.error("Error syncing cliente to Sheets:", err);
   }
@@ -147,15 +105,7 @@ function padOrderId(id: string): string {
   return `${match[1]}-${match[2].padStart(7, "0")}`;
 }
 
-async function countOrdenes(sheets: ReturnType<typeof google.sheets>): Promise<number> {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "Ordenes!B2:B",
-  });
-  return (res.data.values || []).filter((r) => r[0]).length;
-}
-
-export const syncOrdenToSheet = onDocumentWritten("repairs/{repairId}", async (event) => {
+export const syncOrdenToSheet = onDocumentWritten("repairs/{repairId}", async () => {
   if (!SPREADSHEET_ID) {
     console.log("No SPREADSHEET_ID configurado, saltando sync.");
     return;
@@ -163,32 +113,19 @@ export const syncOrdenToSheet = onDocumentWritten("repairs/{repairId}", async (e
 
   try {
     const sheets = await getSheets();
-    const id = event.params.repairId;
-
     await ensureSheetExists(sheets, "Ordenes");
-    await ensureHeader(sheets, RANGE_ORDENES, [
-      "N°", "OT", "Cliente", "DNI", "Teléfono", "Vehículo", "Tipo", "Sede",
-      "Estado", "Técnico", "Costo Est.", "F. Ingreso", "F. Entrega"
-    ]);
 
-    const change = event.data;
-    if (!change) return;
+    const snap = await adminDefault.firestore().collection("repairs").get();
+    const docs = snap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as any) }))
+      .sort((a, b) => String(a.receptionDate || "").localeCompare(String(b.receptionDate || "")));
 
-    if (!change.after.exists) {
-      const rowNum = await findRowById(sheets, RANGE_ORDENES, id, 1);
-      if (rowNum) {
-        await sheets.spreadsheets.values.clear({
-          spreadsheetId: SPREADSHEET_ID,
-          range: `Ordenes!A${rowNum}:M${rowNum}`,
-        });
-      }
-      return;
-    }
-
-    const d = change.after.data()!;
-    const row = [
-      "",
-      padOrderId(id),
+    const rows = [
+      ["N°", "OT", "Cliente", "DNI", "Teléfono", "Vehículo", "Tipo", "Sede",
+        "Estado", "Técnico", "Costo Est.", "F. Ingreso", "F. Entrega"]
+    ].concat(docs.map((d, i) => [
+      String(i + 1),
+      padOrderId(d.id),
       d.client?.name || "",
       d.client?.dni || "",
       d.client?.phone || "",
@@ -200,28 +137,9 @@ export const syncOrdenToSheet = onDocumentWritten("repairs/{repairId}", async (e
       d.estimatedCost || 0,
       formatDate(d.receptionDate),
       d.status === "delivered" ? formatDate(d.deliveryDate || d.deliveredAt || d.updatedAt) : "",
-    ];
+    ]));
 
-    const rowNum = await findRowById(sheets, RANGE_ORDENES, id, 1);
-    if (rowNum) {
-      row[0] = String(rowNum - 1);
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `Ordenes!A${rowNum}:M${rowNum}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [row] },
-      });
-    } else {
-      const nro = (await countOrdenes(sheets)) + 1;
-      row[0] = String(nro);
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: RANGE_ORDENES,
-        valueInputOption: "RAW",
-        insertDataOption: "INSERT_ROWS",
-        requestBody: { values: [row] },
-      });
-    }
+    await replaceSheet(sheets, "Ordenes", rows);
   } catch (err) {
     console.error("Error syncing orden to Sheets:", err);
   }
