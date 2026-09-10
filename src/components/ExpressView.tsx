@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Printer, Plus, Minus, Store, User, Hash, Receipt, RotateCcw, ChevronDown, ChevronUp, Settings, Trash, Zap, Wrench, XCircle, Check } from "lucide-react";
 import { db, isFirebaseConfigured, collection, doc, getDocs, getDoc, setDoc, query, where, orderBy, limit, serverTimestamp } from "../firebase";
 import { nextClientId } from "../data/idGenerator";
+import { normalizeDocument, detectDocumentType, canUseAsCanonicalDocId } from "../data/documentValidator";
 
 interface ExpressService {
   id: string;
@@ -501,11 +502,12 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
     // Sincronizar cliente del Express: dar ID interno CLI-XXXXXX si es nuevo
     if (isFirebaseConfigured && db) {
       try {
-        const dniSync = receipt.clientDni || "";
+        const dniSync = normalizeDocument(receipt.clientDni || "");
         const phoneSync = receipt.clientPhone || "";
-        // Solo un DNI/RUC bien formado (8 o 11 dígitos) puede usarse como id del doc
-        // canónico; un DNI mal tecleado nunca crea un documento "clientes/{dniRoto}".
-        const dniSyncEsIdValido = /^\d{8}$/.test(dniSync) || /^\d{11}$/.test(dniSync);
+        // Solo un documento bien formado (DNI/RUC o Carné de Extranjería con letra)
+        // puede usarse como id del doc canónico; un DNI mal tecleado nunca crea un
+        // documento "clientes/{dniRoto}".
+        const dniSyncEsIdValido = canUseAsCanonicalDocId(dniSync);
         let clientRef = doc(db, "clientes", dniSyncEsIdValido ? dniSync : (phoneSync || correlative));
         let existing = await getDoc(clientRef);
         // Dedupe: si el doc con id = DNI/teléfono no existe, buscar por campo dni, phone o phone2
@@ -552,6 +554,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
           name: receipt.clientName || "",
           phone: phoneMain,
           dni: dniSync,
+          docType: detectDocumentType(dniSync),
           vehicleType: receipt.vehicleType || "",
           source: existingData?.source === "tablet" ? "tablet" : "express",
           createdAt: existingData?.createdAt || Date.now(),

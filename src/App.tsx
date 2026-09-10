@@ -22,6 +22,7 @@ import { RepairItem, WorkshopStats, VideoEvidence } from "./types";
 import { AuthConfig, AuthSession, ROLE_TABS, loadConfig, loadSession, saveConfig, saveSession, clearSession, isValidConfig, pushRemoteConfig, listUsers } from "./auth";
 import { onRepairCreated, onRepairUpdated, onRepairDeleted } from "./data";
 import { nextClientId } from "./data/idGenerator";
+import { normalizeDocument, detectDocumentType, canUseAsCanonicalDocId } from "./data/documentValidator";
 import { AlertCircle, RefreshCw } from "lucide-react";
 
 // Firestore rechaza valores `undefined`; elimina recursivamente esos campos
@@ -430,10 +431,11 @@ export default function App() {
           const phoneKey = (payload.client.phone || "").trim() ||
             (payload.client.dni || "").trim() || `tablet-${Date.now()}`;
           const clientDocId = phoneKey.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const dniStored = (payload.client.dni || "").trim();
-          // Solo un DNI/RUC bien formado (8 o 11 dígitos) puede usarse como id del doc
-          // canónico. Un DNI mal tecleado nunca crea un documento "clientes/{dniRoto}".
-          const dniEsIdValido = /^\d{8}$/.test(dniStored) || /^\d{11}$/.test(dniStored);
+          const dniStored = normalizeDocument(payload.client.dni);
+          // Solo un documento bien formado (DNI/RUC o Carné de Extranjería con letra)
+          // puede usarse como id del doc canónico. Un DNI mal tecleado nunca crea un
+          // documento "clientes/{dniRoto}".
+          const dniEsIdValido = canUseAsCanonicalDocId(dniStored);
           // Dedupe: reutilizar el doc canónico existente (por DNI o por teléfono)
           // para no crear duplicados. No altera la estructura (subcolección local + canónico).
           let existingRef: any = null;
@@ -523,6 +525,7 @@ export default function App() {
             name: payload.client.name || "",
             phone: phoneValue,
             dni: dniStored || phoneKey,
+            docType: detectDocumentType(dniStored),
             email: payload.client.email || "",
             vehicleType: typeToLabel[payload.vehicle.type] || "Scooter",
             vehicleBrand: payload.vehicle.brand || "",

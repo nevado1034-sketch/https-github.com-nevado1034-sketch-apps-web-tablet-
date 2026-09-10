@@ -64,10 +64,14 @@ function formatDate(date: any): string {
 
 // ═══════ SYNC CLIENTES ═══════
 // Un id numérico de documento de cliente solo es válido si es un DNI (8 dígitos)
-// o un RUC (11 dígitos). Cualquier otro id numérico (p. ej. DNI mal tecleado de 9
-// dígitos) se consolida automáticamente: se archiva y se enlaza al canónico con ese DNI.
+// o un RUC (11 dígitos). Un Carné de Extranjería es válido como id únicamente si
+// contiene al menos una letra (formato legado "E..."); un CE puramente numérico es
+// indistinguible de un DNI mal tecleado, por eso no califica. Cualquier id numérico
+// fuera de esas reglas (p. ej. DNI mal tecleado de 9 dígitos) se consolida
+// automáticamente: se archiva y se enlaza al canónico con ese DNI.
 function clientDocIdEsValido(id: string): boolean {
-  return /^\d{8}$/.test(id) || /^\d{11}$/.test(id);
+  if (/^\d{8}$/.test(id) || /^\d{11}$/.test(id)) return true;
+  return /^[a-zA-Z0-9]{9,12}$/.test(id) && /[a-zA-Z]/.test(id);
 }
 
 export const syncClienteToSheet = onDocumentWritten("clientes/{clienteId}", async (event) => {
