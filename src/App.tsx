@@ -431,6 +431,9 @@ export default function App() {
             (payload.client.dni || "").trim() || `tablet-${Date.now()}`;
           const clientDocId = phoneKey.replace(/[^a-zA-Z0-9._-]/g, "_");
           const dniStored = (payload.client.dni || "").trim();
+          // Solo un DNI/RUC bien formado (8 o 11 dígitos) puede usarse como id del doc
+          // canónico. Un DNI mal tecleado nunca crea un documento "clientes/{dniRoto}".
+          const dniEsIdValido = /^\d{8}$/.test(dniStored) || /^\d{11}$/.test(dniStored);
           // Dedupe: reutilizar el doc canónico existente (por DNI o por teléfono)
           // para no crear duplicados. No altera la estructura (subcolección local + canónico).
           let existingRef: any = null;
@@ -438,9 +441,11 @@ export default function App() {
           if (isFirebaseConfigured && db) {
             try {
               if (dniStored) {
-                existingRef = doc(db, "clientes", dniStored);
-                existingClient = await getDoc(existingRef);
-                if (!existingClient.exists() || (existingClient.data() as any)?.archived === true) {
+                if (dniEsIdValido) {
+                  existingRef = doc(db, "clientes", dniStored);
+                  existingClient = await getDoc(existingRef);
+                }
+                if (!existingClient?.exists?.() || (existingClient.data() as any)?.archived === true) {
                   const q = query(collection(db, "clientes"), where("dni", "==", dniStored), where("dni", "!=", ""), limit(5));
                   const snap = await getDocs(q);
                   const candidato = snap.docs.find((d) => (d.data() as any)?.archived !== true && !(d.data() as any)?.mergedInto);
@@ -552,7 +557,7 @@ export default function App() {
           if (existingRef) {
             await setDoc(existingRef, clientData, { merge: true });
           } else {
-            await setDoc(doc(db, "clientes", dniStored || clientDocId), clientData);
+            await setDoc(doc(db, "clientes", dniEsIdValido ? dniStored : clientDocId), clientData);
           }
         } catch (clientErr) {
           console.error("Error sincronizando cliente a Firestore:", clientErr);

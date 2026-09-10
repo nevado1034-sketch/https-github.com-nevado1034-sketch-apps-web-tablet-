@@ -503,7 +503,10 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
       try {
         const dniSync = receipt.clientDni || "";
         const phoneSync = receipt.clientPhone || "";
-        let clientRef = doc(db, "clientes", dniSync || phoneSync || correlative);
+        // Solo un DNI/RUC bien formado (8 o 11 dígitos) puede usarse como id del doc
+        // canónico; un DNI mal tecleado nunca crea un documento "clientes/{dniRoto}".
+        const dniSyncEsIdValido = /^\d{8}$/.test(dniSync) || /^\d{11}$/.test(dniSync);
+        let clientRef = doc(db, "clientes", dniSyncEsIdValido ? dniSync : (phoneSync || correlative));
         let existing = await getDoc(clientRef);
         // Dedupe: si el doc con id = DNI/teléfono no existe, buscar por campo dni, phone o phone2
         // para no crear duplicados del mismo cliente.

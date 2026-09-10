@@ -63,6 +63,13 @@ function formatDate(date: any): string {
 }
 
 // ═══════ SYNC CLIENTES ═══════
+// Un id numérico de documento de cliente solo es válido si es un DNI (8 dígitos)
+// o un RUC (11 dígitos). Cualquier otro id numérico (p. ej. DNI mal tecleado de 9
+// dígitos) se consolida automáticamente: se archiva y se enlaza al canónico con ese DNI.
+function clientDocIdEsValido(id: string): boolean {
+  return /^\d{8}$/.test(id) || /^\d{11}$/.test(id);
+}
+
 export const syncClienteToSheet = onDocumentWritten("clientes/{clienteId}", async (event) => {
   if (!SPREADSHEET_ID) {
     console.log("No SPREADSHEET_ID configurado, saltando sync.");
@@ -72,24 +79,44 @@ export const syncClienteToSheet = onDocumentWritten("clientes/{clienteId}", asyn
   try {
     const sheets = await getSheets();
     await ensureSheetExists(sheets, "Clientes");
+    const db = adminDefault.firestore();
+    const snap = await db.collection("clientes").get();
 
-    const snap = await adminDefault.firestore().collection("clientes").get();
-    const docs = snap.docs
-      .map((d) => ({ id: d.id, ...(d.data() as any) }))
-      .filter((c) => c.archived !== true && !c.mergedInto)
-      .sort((a, b) => String(a.internalId || a.id).localeCompare(String(b.internalId || b.id)));
+    // Red de seguridad: consolidar ids malformados creados por dispositivos antiguos.
+    const docsRaw = snap.docs.map((d) => ({ ref: d.ref, id: d.id, data: d.data() as any }));
+    const malformados = docsRaw.filter(
+      (d) => !d.data.archived && !d.data.mergedInto && /^\d+$/.test(d.id) && !clientDocIdEsValido(d.id)
+    );
+    for (const bad of malformados) {
+      const dni = String(bad.data.dni || "");
+      const target = docsRaw.find(
+        (c) => c.id !== bad.id && !c.data.archived && !c.data.mergedInto &&
+          clientDocIdEsValido(c.id) && dni && String(c.data.dni || "") === dni
+      );
+      await bad.ref.update({
+        archived: true,
+        archivedAt: adminDefault.firestore.FieldValue.serverTimestamp(),
+        mergedInto: target ? target.id : "",
+        autoConsolidated: true,
+      });
+      console.log(`Cliente id malformado ${bad.id} archivado -> mergedInto ${target ? target.id : ""}`);
+    }
+
+    const docs = docsRaw
+      .filter((c) => c.data.archived !== true && !c.data.mergedInto)
+      .sort((a, b) => String(a.data.internalId || a.id).localeCompare(String(b.data.internalId || b.id)));
 
     const rows = [
       ["ID", "Nombre", "Teléfono", "DNI", "Sede", "Dirección", "Fecha Registro", "Última Actualización"]
     ].concat(docs.map((c) => [
-      c.internalId || c.id,
-      c.name || "",
-      c.phone || "",
-      c.dni || "",
-      c.workshopBranch || "",
-      c.address || "",
-      formatDate(c.createdAt),
-      formatDate(c.updatedAt),
+      c.data.internalId || c.id,
+      c.data.name || "",
+      c.data.phone || "",
+      c.data.dni || "",
+      c.data.workshopBranch || "",
+      c.data.address || "",
+      formatDate(c.data.createdAt),
+      formatDate(c.data.updatedAt),
     ]));
 
     await replaceSheet(sheets, "Clientes", rows);
