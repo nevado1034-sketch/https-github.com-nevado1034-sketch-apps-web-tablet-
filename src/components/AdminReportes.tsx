@@ -189,7 +189,9 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     const load = async () => {
       try {
         const snap = await getDocs(collection(db, "clientes"));
-        const data = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+        const data = snap.docs
+          .map((d) => ({ id: d.id, ...d.data() } as any))
+          .filter((c) => c.archived !== true && !c.mergedInto);
         if (mounted) { setClientes(data); setClientesOk(true); }
       } catch { if (mounted) setClientesOk(false); }
     };

@@ -440,24 +440,36 @@ export default function App() {
               if (dniStored) {
                 existingRef = doc(db, "clientes", dniStored);
                 existingClient = await getDoc(existingRef);
-                if (!existingClient.exists()) {
-                  const q = query(collection(db, "clientes"), where("dni", "==", dniStored), where("dni", "!=", ""), limit(1));
+                if (!existingClient.exists() || (existingClient.data() as any)?.archived === true) {
+                  const q = query(collection(db, "clientes"), where("dni", "==", dniStored), where("dni", "!=", ""), limit(5));
                   const snap = await getDocs(q);
-                  if (!snap.empty) {
+                  const candidato = snap.docs.find((d) => (d.data() as any)?.archived !== true && !(d.data() as any)?.mergedInto);
+                  if (candidato) {
+                    existingClient = candidato;
+                    existingRef = candidato.ref;
+                  } else if (!snap.empty) {
                     existingClient = snap.docs[0];
                     existingRef = snap.docs[0].ref;
                   }
                 }
               } else if (phoneKey && !phoneKey.startsWith("tablet-")) {
-                const q = query(collection(db, "clientes"), where("phone", "==", payload.client.phone), limit(1));
+                const q = query(collection(db, "clientes"), where("phone", "==", payload.client.phone), limit(5));
                 const snap = await getDocs(q);
-                if (!snap.empty) {
+                const candidato = snap.docs.find((d) => (d.data() as any)?.archived !== true && !(d.data() as any)?.mergedInto);
+                if (candidato) {
+                  existingClient = candidato;
+                  existingRef = candidato.ref;
+                } else if (!snap.empty) {
                   existingClient = snap.docs[0];
                   existingRef = snap.docs[0].ref;
                 } else {
-                  const q2 = query(collection(db, "clientes"), where("phone2", "==", payload.client.phone), limit(1));
+                  const q2 = query(collection(db, "clientes"), where("phone2", "==", payload.client.phone), limit(5));
                   const snap2 = await getDocs(q2);
-                  if (!snap2.empty) {
+                  const candidato2 = snap2.docs.find((d) => (d.data() as any)?.archived !== true && !(d.data() as any)?.mergedInto);
+                  if (candidato2) {
+                    existingClient = candidato2;
+                    existingRef = candidato2.ref;
+                  } else if (!snap2.empty) {
                     existingClient = snap2.docs[0];
                     existingRef = snap2.docs[0].ref;
                   }

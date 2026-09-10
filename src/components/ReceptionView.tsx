@@ -354,6 +354,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
             const snap = await getDocs(q);
             for (const sdoc of snap.docs) {
               const d = sdoc.data() as any;
+              if (d.archived === true || d.mergedInto) continue;
               const appVehicleType = String(d.vehicleType || "").toLowerCase();
               firestoreMatch = {
                 name: d.name || "",

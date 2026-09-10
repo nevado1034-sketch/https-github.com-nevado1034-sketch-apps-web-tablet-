@@ -508,22 +508,28 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
         // Dedupe: si el doc con id = DNI/teléfono no existe, buscar por campo dni, phone o phone2
         // para no crear duplicados del mismo cliente.
         if (!existing.exists() && dniSync) {
-          const byDni = await getDocs(query(collection(db, "clientes"), where("dni", "==", dniSync), limit(1)));
-          if (!byDni.empty) {
+          const byDni = await getDocs(query(collection(db, "clientes"), where("dni", "==", dniSync), limit(5)));
+          const candidato = byDni.docs.find((d) => (d.data() as any)?.archived !== true && !(d.data() as any)?.mergedInto);
+          if (candidato) {
+            clientRef = candidato.ref;
+            existing = await getDoc(clientRef);
+          } else if (!byDni.empty) {
             clientRef = byDni.docs[0].ref;
             existing = await getDoc(clientRef);
           }
         } else if (!existing.exists() && phoneSync && (existing as any)) {
-          const byPhone = await getDocs(query(collection(db, "clientes"), where("phone", "==", phoneSync), limit(1)));
-          if (!byPhone.empty) {
-            clientRef = byPhone.docs[0].ref;
-            existing = await getDoc(clientRef);
-          } else {
-            const byPhone2 = await getDocs(query(collection(db, "clientes"), where("phone2", "==", phoneSync), limit(1)));
-            if (!byPhone2.empty) {
-              clientRef = byPhone2.docs[0].ref;
+          const byPhone = await getDocs(query(collection(db, "clientes"), where("phone", "==", phoneSync), limit(5)));
+          let candidato = byPhone.docs.find((d) => (d.data() as any)?.archived !== true && !(d.data() as any)?.mergedInto);
+          if (!candidato) {
+            const byPhone2 = await getDocs(query(collection(db, "clientes"), where("phone2", "==", phoneSync), limit(5)));
+            candidato = byPhone2.docs.find((d) => (d.data() as any)?.archived !== true && !(d.data() as any)?.mergedInto);
+            if (candidato) {
+              clientRef = candidato.ref;
               existing = await getDoc(clientRef);
             }
+          } else {
+            clientRef = candidato.ref;
+            existing = await getDoc(clientRef);
           }
         }
         const existingData = existing.exists() ? (existing.data() as any) : null;
