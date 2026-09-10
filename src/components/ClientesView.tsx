@@ -8,7 +8,9 @@ import {
   Printer,
   Calendar,
   ChevronRight,
-  CheckCircle
+  CheckCircle,
+  Clock,
+  MapPin
 } from "lucide-react";
 import { RepairItem, RepairStatus } from "../types";
 import { generateRepairPdf } from "../utils/pdfGenerator";
@@ -103,6 +105,7 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey }: 
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [historyKey, setHistoryKey] = useState<string | null>(null);
 
   // La jefa de sede solo ve y administra los archivos de su propia sede.
   const effectiveBranch = userLocalKey || selectedBranch;
@@ -212,10 +215,21 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey }: 
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center space-x-3 shrink-0">
+                <div className="flex items-center space-x-2 shrink-0">
                   <span className={`inline-block px-2 py-0.5 rounded-full border text-[9px] font-bold ${STATUS_BADGES[g.orders[0].status]}`}>
                     {STATUS_LABELS[g.orders[0].status]}
                   </span>
+                  {g.orders.length >= 1 && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setHistoryKey(historyKey === g.key ? null : g.key); }}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[10px] font-bold transition-all cursor-pointer ${historyKey === g.key ? "bg-amber-500/20 text-amber-300 border-amber-500/40" : "bg-slate-800/60 text-slate-400 border-slate-700 hover:bg-slate-800 hover:text-slate-200"}`}
+                      title="Ver historial completo de este cliente en todas las sedes"
+                    >
+                      <Clock className="w-3 h-3" />
+                      <span className="hidden sm:inline">Historial</span>
+                    </button>
+                  )}
                   <ChevronRight className={`w-4 h-4 text-slate-500 transition-transform ${expandedKey === g.key ? "rotate-90" : ""}`} />
                 </div>
               </button>
@@ -298,6 +312,54 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey }: 
                         </div>
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {historyKey === g.key && (
+                <div className="border-t border-slate-800 bg-slate-950/60 p-4">
+                  <p className="text-[10px] font-bold text-amber-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5" /> Historial completo · Todas las sedes
+                  </p>
+                  <div className="relative ml-2 border-l-2 border-slate-800 space-y-0">
+                    {g.orders
+                      .slice()
+                      .sort((a, b) => new Date(b.receptionDate).getTime() - new Date(a.receptionDate).getTime())
+                      .map((r) => (
+                        <div key={r.id} className="relative pl-5 pb-4 last:pb-0">
+                          <div className={`absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 ${r.status === "delivered" ? "bg-emerald-500 border-emerald-400" : r.status === "ready" ? "bg-cyan-500 border-cyan-400" : "bg-slate-700 border-slate-600"}`} />
+                          <div className="flex items-start gap-3 flex-wrap">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap mb-1">
+                                <span className="font-mono font-bold text-xs text-cyan-400">{r.id}</span>
+                                <span className={`px-1.5 py-0.5 rounded border text-[8px] font-bold ${STATUS_BADGES[r.status]}`}>
+                                  {STATUS_LABELS[r.status]}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mb-0.5">
+                                <MapPin className="w-3 h-3 text-slate-500" />
+                                <span className="font-semibold">{BRANCH_LABELS[r.workshopBranch] || r.workshopBranch}</span>
+                                <span className="text-slate-600">·</span>
+                                <Calendar className="w-3 h-3 text-slate-600" />
+                                <span>{new Date(r.receptionDate).toLocaleDateString("es-PE")}</span>
+                                {r.deliveredAt && (
+                                  <>
+                                    <span className="text-slate-600">→</span>
+                                    <span className="text-emerald-500 font-semibold">Entregado {new Date(r.deliveredAt).toLocaleDateString("es-PE")}</span>
+                                  </>
+                                )}
+                              </div>
+                              <p className="text-[10px] text-slate-500">
+                                {r.vehicle.type === "scooter" ? "Scooter" : r.vehicle.type === "moto" ? "Moto" : r.vehicle.type === "bicimoto" ? "Bicimoto" : r.vehicle.type === "trimoto" ? "Trimoto" : r.vehicle.type === "bici" ? "Bici" : "Otro"}{" "}
+                                {r.vehicle.brand} {r.vehicle.model}
+                                {(r.actualCost || r.estimatedCost) ? (
+                                  <span className="ml-2 font-mono font-bold text-emerald-400">${r.actualCost || r.estimatedCost}</span>
+                                ) : null}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                   </div>
                 </div>
               )}
