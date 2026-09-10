@@ -42,10 +42,10 @@ const STATUS_BADGES: Record<RepairStatus, string> = {
 };
 
 const BRANCH_LABELS: Record<string, string> = {
-  lince_arenales: "Arenales (San Isidro)",
+  lince_arenales: "San Isidro",
   surco: "Surco",
   san_borja: "San Borja",
-  lince_leal: "José Leal (Lince)"
+  lince_leal: "Lince"
 };
 
 interface ClientGroup {
@@ -172,10 +172,10 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey }: 
               className="w-full px-3 py-2.5 bg-slate-900 text-xs text-slate-300 border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500 transition-colors"
             >
               <option value="all">Todas las Sedes</option>
-              <option value="lince_arenales">Arenales (San Isidro)</option>
+              <option value="lince_arenales">San Isidro</option>
               <option value="surco">Surco</option>
               <option value="san_borja">San Borja</option>
-              <option value="lince_leal">José Leal (Lince)</option>
+              <option value="lince_leal">Lince</option>
             </select>
           </div>
         )}

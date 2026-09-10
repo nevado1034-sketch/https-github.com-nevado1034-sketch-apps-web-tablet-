@@ -8,10 +8,10 @@ interface LoginViewProps {
 
 const CREDENTIAL_HINTS = [
   { label: "Administrador", username: "admin" },
-  { label: "San Isidro (Arenales)", username: "sanisidro" },
+  { label: "San Isidro", username: "sanisidro" },
   { label: "Surco", username: "surco" },
   { label: "San Borja", username: "sanborja" },
-  { label: "Lince (José Leal)", username: "lincel" }
+  { label: "Lince", username: "lincel" }
 ];
 
 export default function LoginView({ onLogin }: LoginViewProps) {

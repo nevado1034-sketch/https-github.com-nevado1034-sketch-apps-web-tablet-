@@ -107,10 +107,10 @@ const WORKSHOP_BRANCH_LABELS: Record<WorkshopBranch, string> = {
 
 // Mismo mapeo que la app usa al guardar el cliente (campo "sede")
 const BRANCH_TO_SEDE_LABEL: Record<string, string> = {
-  lince_arenales: "Litio Lince",
+  lince_arenales: "Litio San Isidro",
   surco: "Litio Surco",
   san_borja: "Litio San Borja",
-  lince_leal: "Litio Jose Leal"
+  lince_leal: "Litio Leal"
 };
 
 // Etiquetas de sede usadas por la app Android (puede variar por versión)
@@ -118,7 +118,7 @@ const ANDROID_SEDE_LABELS: Record<string, string[]> = {
   lince_arenales: ["Litio Lince", "Litio San Isidro", "Litio Arenales"],
   surco: ["Litio Surco"],
   san_borja: ["Litio San Borja"],
-  lince_leal: ["Litio Jose Leal", "Litio Leal"]
+  lince_leal: ["Litio Jose Leal", "Litio Leal", "Litio Lince Leal"]
 };
 
 // Convierte la etiqueta de vehículo de la app Android al tipo interno
@@ -838,10 +838,10 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                         onChange={e => setWorkshopBranch(e.target.value as WorkshopBranch)}
                         className="bg-transparent text-slate-200 text-xs font-bold focus:outline-none pr-2"
                       >
-                        <option value="lince_arenales" className="bg-slate-950 text-slate-100">Sede Arenales - San Isidro</option>
+                        <option value="lince_arenales" className="bg-slate-950 text-slate-100">Sede San Isidro</option>
                         <option value="surco" className="bg-slate-950 text-slate-100">Sede Surco</option>
                         <option value="san_borja" className="bg-slate-950 text-slate-100">Sede San Borja</option>
-                        <option value="lince_leal" className="bg-slate-950 text-slate-100">Sede Jose Leal - Lince</option>
+                        <option value="lince_leal" className="bg-slate-950 text-slate-100">Sede Lince</option>
                       </select>
                     </>
                   )}

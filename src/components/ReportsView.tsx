@@ -8,10 +8,10 @@ interface ReportsViewProps {
 }
 
 const BRANCH_LABELS: Record<string, string> = {
-  lince_arenales: "San Isidro (Arenales)",
+  lince_arenales: "San Isidro",
   surco: "Surco",
   san_borja: "San Borja",
-  lince_leal: "Lince (José Leal)"
+  lince_leal: "Lince"
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -217,10 +217,10 @@ export default function ReportsView({ repairs, userBranch }: ReportsViewProps) {
                 className="bg-transparent text-slate-200 text-xs font-bold focus:outline-none"
               >
                 <option value="all" className="bg-slate-950">Todas las sedes</option>
-                <option value="lince_arenales" className="bg-slate-950">San Isidro (Arenales)</option>
+                <option value="lince_arenales" className="bg-slate-950">San Isidro</option>
                 <option value="surco" className="bg-slate-950">Surco</option>
                 <option value="san_borja" className="bg-slate-950">San Borja</option>
-                <option value="lince_leal" className="bg-slate-950">Lince (José Leal)</option>
+                <option value="lince_leal" className="bg-slate-950">Lince</option>
               </select>
             </div>
           )}

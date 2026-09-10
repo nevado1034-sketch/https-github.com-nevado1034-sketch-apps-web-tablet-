@@ -39,17 +39,17 @@ const typeLabels: Record<string, string> = {
 };
 
 const branchNames: Record<string, string> = {
-  lince_arenales: "San Isidro (Arenales)",
+  lince_arenales: "San Isidro",
   surco: "Surco",
   san_borja: "San Borja",
-  lince_leal: "Lince (José Leal)"
+  lince_leal: "Lince"
 };
 
 const sentFromLabels: Record<string, string> = {
-  lince_arenales: "Enviado desde SAN ISIDRO (ARENALES)",
+  lince_arenales: "Enviado desde SAN ISIDRO",
   surco: "Enviado desde SURCO",
   san_borja: "Enviado desde SAN BORJA",
-  lince_leal: "Enviado desde LINCE (JOSÉ LEAL)"
+  lince_leal: "Enviado desde LINCE"
 };
 
 const serviceLabels: Record<string, string> = {

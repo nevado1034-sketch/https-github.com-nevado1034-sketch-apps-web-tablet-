@@ -50,16 +50,17 @@ interface ChatMessage {
 }
 
 const BRANCH_LABELS: Record<string, string> = {
-  "Litio Lince": "San Isidro (Arenales)",
-  "Litio San Isidro": "San Isidro (Arenales)",
+  "Litio Lince": "San Isidro",
+  "Litio San Isidro": "San Isidro",
   "Litio Surco": "Surco",
   "Litio San Borja": "San Borja",
-  "Litio Jose Leal": "Lince (José Leal)",
-  "Litio Leal": "Lince (José Leal)",
-  lince_arenales: "San Isidro (Arenales)",
+  "Litio Jose Leal": "Lince",
+  "Litio Leal": "Lince",
+  "Litio Lince Leal": "Lince",
+  lince_arenales: "San Isidro",
   surco: "Surco",
   san_borja: "San Borja",
-  lince_leal: "Lince (José Leal)"
+  lince_leal: "Lince"
 };
 
 // Valores de "sede" (etiqueta o key) que pertenecen a cada local
@@ -67,7 +68,7 @@ const LOCAL_SEDE_VALUES: Record<string, string[]> = {
   lince_arenales: ["Litio Lince", "Litio San Isidro", "lince_arenales"],
   surco: ["Litio Surco", "surco"],
   san_borja: ["Litio San Borja", "san_borja"],
-  lince_leal: ["Litio Jose Leal", "Litio Leal", "lince_leal"]
+  lince_leal: ["Litio Jose Leal", "Litio Leal", "Litio Lince Leal", "lince_leal"]
 };
 
 const clientMatchesLocal = (c: { sede?: string; sedeKey?: string }, localKey: string): boolean => {

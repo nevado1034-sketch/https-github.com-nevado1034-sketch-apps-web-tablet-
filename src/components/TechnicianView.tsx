@@ -38,7 +38,7 @@ const BRANCH_SHORT_LABELS: Record<string, string> = {
   lince_arenales: "S. Isidro",
   surco: "Surco",
   san_borja: "S. Borja",
-  lince_leal: "Leal"
+  lince_leal: "Lince"
 };
 
 const STATUS_SHORT_LABELS: Record<string, string> = {
@@ -565,7 +565,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
               <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Sede TV:</span>
               {userLocalKey ? (
                 <span className="text-slate-200 text-xs font-black">
-                  {tvFilterBranch === "lince_arenales" ? "San Isidro (Arenales)" : tvFilterBranch === "surco" ? "Surco" : tvFilterBranch === "san_borja" ? "San Borja" : tvFilterBranch === "lince_leal" ? "Lince (Jose Leal)" : "Todas las sedes"}
+                  {tvFilterBranch === "lince_arenales" ? "San Isidro" : tvFilterBranch === "surco" ? "Surco" : tvFilterBranch === "san_borja" ? "San Borja" : tvFilterBranch === "lince_leal" ? "Lince" : "Todas las sedes"}
                 </span>
               ) : (
                 <select
@@ -574,10 +574,10 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                   className="bg-transparent text-slate-200 text-xs font-black focus:outline-none"
                 >
                   <option value="all" className="bg-slate-950 text-slate-200">Todas las sedes</option>
-                  <option value="lince_arenales" className="bg-slate-950 text-slate-200">San Isidro (Arenales)</option>
+                  <option value="lince_arenales" className="bg-slate-950 text-slate-200">San Isidro</option>
                   <option value="surco" className="bg-slate-950 text-slate-200">Surco</option>
                   <option value="san_borja" className="bg-slate-950 text-slate-200">San Borja</option>
-                  <option value="lince_leal" className="bg-slate-950 text-slate-200">Lince (Jose Leal)</option>
+                  <option value="lince_leal" className="bg-slate-950 text-slate-200">Lince</option>
                 </select>
               )}
             </div>
@@ -788,7 +788,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         <p className="text-slate-300"><strong>Tiempo de Uso de la Batería:</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>
                       </div>
                       <div className="space-y-1.5">
-                        <p className="text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "Arenales (San Isidro)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
+                        <p className="text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "San Isidro" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Lince" : "Lince"}</p>
                         <p className="text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{activeRepair.serviceType === "mantenimiento" ? "Mantenimiento" : activeRepair.serviceType === "diagnostico" ? "Diagnóstico" : activeRepair.serviceType === "garantia" ? "Garantía" : activeRepair.serviceType === "cambio" ? "Cambio de Repuesto" : activeRepair.serviceType === "express" ? "Servicio Express" : "Diagnóstico"}</span></p>
                         <p className="text-slate-300"><strong>Accesorios:</strong> {[
                           activeRepair.accessories.charger ? "Cargador" : null,
@@ -1234,7 +1234,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         <Smartphone className="w-3.5 h-3.5" />
                         <span>Ficha de Recepción</span>
                       </h4>
-                      <p className="mb-1 text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "Arenales (San Isidro)" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Jose Leal (Lince)" : "Lince"}</p>
+                      <p className="mb-1 text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "San Isidro" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Lince" : "Lince"}</p>
                       <p className="mb-1 text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{STATUS_SHORT_LABELS[activeRepair.status] || activeRepair.status}</span></p>
                       <p className="mb-1 text-slate-300"><strong>Tipo de Vehículo:</strong> {activeRepair.vehicle.type.toUpperCase()}</p>
                       <p className="mb-1 text-slate-300"><strong>Voltaje:</strong> {activeRepair.vehicle.voltage}</p>
@@ -1983,10 +1983,10 @@ function TvCard({
 
   // Sede label and color
   const branchNames: Record<string, string> = {
-    lince_arenales: "Arenales (San Isidro)",
+    lince_arenales: "San Isidro",
     surco: "Surco",
     san_borja: "San Borja",
-    lince_leal: "Jose Leal (Lince)"
+    lince_leal: "Lince"
   };
 
   const branchColors: Record<string, string> = {

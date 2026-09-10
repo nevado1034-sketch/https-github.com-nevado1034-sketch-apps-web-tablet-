@@ -37,10 +37,10 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
   }, []);
 
   const branchLabels: Record<string, string> = {
-    lince_arenales: "Arenales (San Isidro)",
+    lince_arenales: "San Isidro",
     surco: "Surco",
     san_borja: "San Borja",
-    lince_leal: "José Leal (Lince)"
+    lince_leal: "Lince"
   };
 
   const deliveredRepairs = repairs.filter(r => r.status === "delivered");
@@ -414,10 +414,10 @@ export default function DashboardView({ repairs, stats }: DashboardViewProps) {
               className="w-full px-3 py-2.5 bg-slate-950 text-xs text-slate-300 border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500 transition-colors"
             >
               <option value="all">Todas las Sedes</option>
-              <option value="lince_arenales">Arenales (San Isidro)</option>
+              <option value="lince_arenales">San Isidro</option>
               <option value="surco">Surco</option>
               <option value="san_borja">San Borja</option>
-              <option value="lince_leal">José Leal (Lince)</option>
+              <option value="lince_leal">Lince</option>
             </select>
           </div>
         </div>

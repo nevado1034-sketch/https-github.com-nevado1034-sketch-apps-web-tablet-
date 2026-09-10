@@ -415,10 +415,10 @@ export default function App() {
         // Sincronizar el cliente también en la colección "clientes" (mismo formato que la App Android)
         try {
           const branchToSede: Record<string, string> = {
-            lince_arenales: "Litio Lince",
+            lince_arenales: "Litio San Isidro",
             surco: "Litio Surco",
             san_borja: "Litio San Borja",
-            lince_leal: "Litio Jose Leal"
+            lince_leal: "Litio Leal"
           };
           const typeToLabel: Record<string, string> = {
             scooter: "Scooter",

@@ -40,10 +40,10 @@ const typeLabels: Record<string, string> = {
 };
 
 const branchNames: Record<string, string> = {
-  lince_arenales: "San Isidro (Arenales)",
+  lince_arenales: "San Isidro",
   surco: "Surco",
   san_borja: "San Borja",
-  lince_leal: "Lince (José Leal)"
+  lince_leal: "Lince"
 };
 
 function stageStart(r: RepairItem): string {
