@@ -16,6 +16,7 @@
     "rules": "storage.rules"
   },
   "hosting": {
+    "site": "litio-energy",
     "public": "dist",
     "ignore": [
       "firebase.json",

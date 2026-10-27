@@ -35,3 +35,7 @@ functions/node_modules/
 functions/lib/
 functions/.env
 functions/package-lock.json
+
+# build artifacts / tooling
+server.js
+*.tsbuildinfo

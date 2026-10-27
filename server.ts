@@ -870,7 +870,7 @@ app.put("/api/repairs/:id", (req, res) => {
   // Add log if status changed
   const oldStatus = currentItem.status;
   const newStatus = updateData.status;
-  let logs = currentItem.historyLog || [];
+  const logs = currentItem.historyLog || [];
   
   if (newStatus && oldStatus !== newStatus) {
     const statusLabels: Record<string, string> = {

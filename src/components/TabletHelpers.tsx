@@ -541,7 +541,7 @@ export function VideoRecorder({ onRecorded, branchLabel = "" }: VideoRecorderPro
         try { recorderRef.current.stop(); } catch {}
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   useEffect(() => {

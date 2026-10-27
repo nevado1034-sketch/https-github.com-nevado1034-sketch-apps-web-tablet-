@@ -266,7 +266,7 @@ function ReassignModal({ repair, tecnicos, current, saving, onSelect, onClose }:
           )}
 
           {tecnicos.map((t) => {
-            const isCurrent = current && t === current;
+            const isCurrent = !!current && t === current;
             return (
               <button
                 key={t}
@@ -354,7 +354,7 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
   const reassigning = localRepairs.find((r) => r.id === reassignId) || null;
 
   const reassignBranch = reassigning?.workshopBranch || userLocalKey;
-  const locale = config.locales.find((l) => l.key === reassignBranch);
+  const locale = config?.locales.find((l) => l.key === reassignBranch);
   const tecnicos = locale ? locale.tecnicos.map((t) => t.name.trim()).filter(Boolean) : [];
 
   const handleSelectTech = async (techName: string) => {

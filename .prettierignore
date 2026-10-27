@@ -1,0 +1,11 @@
+dist
+dist-taller
+node_modules
+coverage
+package-lock.json
+bun.lock
+functions/lib
+_tools
+public
+android-app
+*.md

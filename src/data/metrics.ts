@@ -155,7 +155,7 @@ export function pipelineCounts(orders: RepairItem[]): PipelineCounts {
     delivered: 0
   };
   orders.forEach((r) => {
-    if (r.status in c) c[r.status]++;
+    if (r.status in c) c[r.status as keyof PipelineCounts]++;
   });
   return c;
 }

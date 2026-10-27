@@ -176,12 +176,12 @@ export default function ChatView({ userLocalKey, userName }: { userLocalKey?: st
     };
 
     const unsubs = sources.map(({ q, into }) =>
-      onSnapshot(q, async (snapshot) => {
+      onSnapshot(q, async (snapshot: any) => {
         into.clear();
         const arr = await Promise.all(snapshot.docs.map(buildClient));
         arr.forEach((c) => into.set(c.phone, c));
         commit();
-      }, (err) => {
+      }, (err: any) => {
         console.error("ChatView onSnapshot error:", err);
         setError("Error al cargar clientes desde Firestore. Revisa las reglas de seguridad.");
         setLoading(false);
@@ -354,8 +354,8 @@ export default function ChatView({ userLocalKey, userName }: { userLocalKey?: st
                         </div>
                       </div>
                       <div className="flex flex-col items-end shrink-0 ml-2">
-                        {client.lastMessageTime > 0 && (
-                          <span className="text-[10px] text-slate-500">{formatTime(client.lastMessageTime)}</span>
+                        {(client.lastMessageTime ?? 0) > 0 && (
+                          <span className="text-[10px] text-slate-500">{formatTime(client.lastMessageTime ?? 0)}</span>
                         )}
                         {client.unread ? (
                           <span className="mt-1 w-5 h-5 rounded-full bg-cyan-500 text-slate-950 text-[10px] font-bold flex items-center justify-center">
