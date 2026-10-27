@@ -15,13 +15,13 @@ import TerminosCondiciones from "./components/TerminosCondiciones";
 import GarantiaCondiciones from "./components/GarantiaCondiciones";
 import AuthScreen from "./components/AuthScreen";
 import AdminDashboard from "./components/AdminDashboard";
-import TimeMetricsView from "./components/TimeMetricsView";
+import ProcessToolsView from "./components/ProcessToolsView";
 import WelcomeScreen from "./components/WelcomeScreen";
 import AccessManager from "./components/AccessManager";
-import { RepairItem, WorkshopStats, VideoEvidence } from "./types";
+import { RepairItem, WorkshopStats, VideoEvidence, VisualState } from "./types";
 import { AuthConfig, AuthSession, ROLE_TABS, loadConfig, loadSession, saveConfig, saveSession, clearSession, isValidConfig, pushRemoteConfig, listUsers } from "./auth";
 import { onRepairCreated, onRepairUpdated, onRepairDeleted } from "./data";
-import { nextClientId } from "./data/idGenerator";
+import { nextClientId, nextOrderId } from "./data/idGenerator";
 import { normalizeDocument, detectDocumentType, canUseAsCanonicalDocId } from "./data/documentValidator";
 import { AlertCircle, RefreshCw } from "lucide-react";
 
@@ -113,6 +113,7 @@ import {
   collection, 
   doc, 
   setDoc, 
+  updateDoc,
   deleteDoc,
   onSnapshot, 
   query, 
@@ -309,22 +310,17 @@ export default function App() {
     setIsLoading(true);
     try {
       if (isFirebaseConfigured && db) {
-        const BRANCH_PREFIXES: Record<string, string> = {
-          lince_arenales: "LSI",
-          san_borja: "LSB",
-          surco: "LS",
-          lince_leal: "LL"
-        };
         const branch = payload.workshopBranch || "lince_arenales";
-        const prefix = BRANCH_PREFIXES[branch] || "LT";
-        const branchRepairs = repairs.filter((r) => (r.workshopBranch || "lince_arenales") === branch);
-        let count = branchRepairs.length + 1;
-        let seqId = `${prefix}-${String(count).padStart(5, "0")}`;
-        const existingIds = new Set(repairs.map((r) => r.id));
-        while (existingIds.has(seqId)) {
-          count++;
-          seqId = `${prefix}-${String(count).padStart(5, "0")}`;
+        // Máximo correlativo existente para la sede: arranca el contador ahí y
+        // Firestore asigna el siguiente de forma atómica (sin duplicados en
+        // caso de 2 tablets o asesoras simultáneas).
+        let maxSeq = 0;
+        for (const r of repairs) {
+          if ((r.workshopBranch || "lince_arenales") !== branch) continue;
+          const m = /^[A-Z]{2}-(\d{6})$/.exec(r.id || "");
+          if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
         }
+        const seqId = await nextOrderId(branch, maxSeq);
 
         // Subir videos de respaldo a Firebase Storage: evidencias/{año}/{mes}/{orden}/{timestamp}-{sede}.webm
         const videoBlobs = payload.videoEvidenceBlobs || [];
@@ -562,6 +558,12 @@ export default function App() {
           } else {
             await setDoc(doc(db, "clientes", dniEsIdValido ? dniStored : clientDocId), clientData);
           }
+          // Enlazar la OT con la identidad canónica del cliente (misma que usan
+          // los recibos Express) para poder unir su historial por internalId.
+          if (internalIdStored) {
+            repairItem.client = { ...repairItem.client, internalId: internalIdStored };
+            await updateDoc(doc(db, "repairs", seqId), { "client.internalId": internalIdStored });
+          }
         } catch (clientErr) {
           console.error("Error sincronizando cliente a Firestore:", clientErr);
         }
@@ -598,16 +600,10 @@ export default function App() {
         // Dual-write: delete from ordenes collection
         onRepairDeleted(repair.id).catch((e) => console.error("Dual-write delete error:", e));
 
-        const phone = (repair.client?.phone || "").replace(/[^\d]/g, "");
-      const dni = (repair.client?.dni || "").replace(/[^\d]/g, "");
-      if (phone) {
-        await deleteDoc(doc(db, "clientes", phone)).catch(() => {});
-        await deleteDoc(doc(db, "clientes", repair.workshopBranch || "lince_arenales", "clientes", phone)).catch(() => {});
-      }
-      if (dni && dni !== phone) {
-        await deleteDoc(doc(db, "clientes", dni)).catch(() => {});
-      }
-      setRepairs((prev) => prev.filter((r) => r.id !== repair.id));
+        // IMPORTANTE: los datos de clientes NO se borran. Eliminar una OT solo
+        // quita la orden; el cliente y su historial quedan intactos para futuras
+        // consultas, garantías y reportes.
+        setRepairs((prev) => prev.filter((r) => r.id !== repair.id));
     } catch (err) {
       console.error("Error eliminando repair:", err);
       alert("No se pudo eliminar. Intente de nuevo.");
@@ -626,7 +622,7 @@ export default function App() {
 
         const oldStatus = currentItem.status;
         const newStatus = updateData.status;
-        let logs = [...(currentItem.historyLog || [])];
+        const logs = [...(currentItem.historyLog || [])];
         
         if (newStatus && oldStatus !== newStatus) {
           const statusLabels: Record<string, string> = {
@@ -637,7 +633,8 @@ export default function App() {
             repairing: "En Reparación",
             testing: "En Pruebas",
             ready: "Listo para Entrega",
-            delivered: "Entregado al Cliente"
+            delivered: "Entregado al Cliente",
+            cancelled: "Cancelado"
           };
           
           logs.push({
@@ -658,6 +655,23 @@ export default function App() {
             user: updateData.assignedByName || session?.name || "Asesora de Servicio"
           });
         }
+
+        // Eventos de historial extra enviados por el técnico (ej. pausas del cronómetro manual)
+        const extraLogs = updateData.extraHistoryLogs || [];
+        if (Array.isArray(extraLogs) && extraLogs.length) {
+          for (const log of extraLogs) {
+            logs.push({
+              id: log.id || `log_${Date.now()}_x`,
+              date: log.date || new Date().toISOString(),
+              status: log.status || currentItem.status,
+              description: log.description || "Evento de taller.",
+              user: log.user || "Técnico Litio",
+              category: log.category,
+              details: log.details
+            });
+          }
+        }
+        delete updateData.extraHistoryLogs;
 
         // Subir videos de respaldo registrados por el técnico durante el diagnóstico
         const videoBlobs = updateData.videoEvidenceBlobs || [];
@@ -699,8 +713,8 @@ export default function App() {
         }
         delete updateData.videoEvidenceBlobs;
 
-        const existingVisual = currentItem.visualState || {};
-        const incomingVisual = updateData.visualState || {};
+        const existingVisual: VisualState = currentItem.visualState || ({} as VisualState);
+        const incomingVisual: Partial<VisualState> = updateData.visualState || {};
         const mergedVideoEvidence = [...(existingVisual.videoEvidence || []), ...newVideoEvidence];
 
         const updatedItem = {
@@ -732,6 +746,7 @@ export default function App() {
         onRepairUpdated(cleanUndefined(updatedItem) as RepairItem).catch((e) => console.error("Dual-write update error:", e));
       } else {
         delete updateData.videoEvidenceBlobs;
+        delete updateData.extraHistoryLogs;
         const response = await fetch(`/api/repairs/${id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -874,6 +889,7 @@ export default function App() {
                 isLoading={isLoading}
                 userLocalKey={session.localKey}
                 userRole={session.role}
+                userName={session.name}
                 onOpenExpress={() => setCurrentTab("express")}
               />
             )}
@@ -939,8 +955,9 @@ export default function App() {
             )}
 
             {currentTab === "tiempos" && (
-              <TimeMetricsView
+              <ProcessToolsView
                 repairs={repairs}
+                onUpdateRepair={handleUpdateRepair}
                 userLocalKey={session.localKey}
                 canEdit={session.role === "admin"}
                 technicians={authConfig ? listUsers(authConfig).filter((u) => u.role === "tecnico").map((u) => u.name.trim()) : []}

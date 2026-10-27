@@ -40,16 +40,18 @@ import {
 import { RepairItem, VehicleType, VisualState, Accessories, WorkshopBranch, ServiceType } from "../types";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
 import { generateRepairPdf } from "../utils/pdfGenerator";
-import { db, isFirebaseConfigured, collection, doc, setDoc, query, where, getDocs, onSnapshot, orderBy, limit } from "../firebase";
+import { db, isFirebaseConfigured, collection, doc, setDoc, updateDoc, query, where, getDocs, onSnapshot, orderBy, limit } from "../firebase";
+import { normalizeDocument, canUseAsCanonicalDocId, detectDocumentType } from "../data/documentValidator";
 
 interface ReceptionViewProps {
   repairs: RepairItem[];
   onCreateRepair: (newRepair: any) => Promise<RepairItem | undefined>;
   onDeleteRepair?: (repair: RepairItem) => Promise<void>;
-  onUpdateRepair?: (id: string, updates: Partial<RepairItem>) => Promise<void>;
+  onUpdateRepair?: (id: string, updates: any) => Promise<void>;
   isLoading: boolean;
   userLocalKey?: string;
   userRole?: string;
+  userName?: string;
   onOpenExpress?: () => void;
 }
 
@@ -131,7 +133,52 @@ const ANDROID_TYPE_KEYS: Record<string, string> = {
   Otro: "otro"
 };
 
-export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair, onUpdateRepair, isLoading, userLocalKey, userRole, onOpenExpress }: ReceptionViewProps) {
+// Entrada de solo lectura proveniente de la app Android (aún no recepcionada en tablets)
+interface AndroidRecentEntry {
+  id: string;
+  client: { name: string; dni: string; phone: string };
+  vehicle: { type: string; brand: string; model: string };
+  status: string;
+  receptionDate: string;
+  source: string;
+  androidRaw: any;
+}
+
+type RecentEntry = RepairItem | AndroidRecentEntry;
+
+function buildEditDetails(
+  prev: any,
+  updatedClient: { name: string; phone: string; email: string; dni: string },
+  accessories: Accessories,
+  reportedFailure: string
+): string {
+  const parts: string[] = [];
+  const accLabels: Record<string, string> = { charger: "Cargador", key: "Llaves/Mando", helmet: "Casco", padlock: "Candado", battery: "Batería" };
+  const prevAcc = prev?.accessories || { charger: false, key: false, battery: false, helmet: false, padlock: false, others: "" };
+  const changedAcc = (Object.keys(accLabels) as Array<keyof typeof accLabels>).filter(
+    (k) => (prevAcc[k] === true) !== (accessories[k as keyof Accessories] === true)
+  );
+  if (changedAcc.length) {
+    parts.push(`Accesorios: ${changedAcc.map((k) => accLabels[k]).join(", ")} → ${changedAcc.map((k) => (accessories[k as keyof Accessories] === true ? "✓" : "✗")).join("/")}`);
+  }
+  if ((prevAcc.others || "") !== (accessories.others || "")) {
+    parts.push(`Otros accesorios: "${prevAcc.others || "—"}" → "${accessories.others || "—"}"`);
+  }
+  if ((prev?.vehicle?.reportedFailure || "") !== reportedFailure) {
+    parts.push(`Síntoma/falla: "${prev?.vehicle?.reportedFailure || "—"}" → "${reportedFailure || "—"}"`);
+  }
+  if (prev?.client) {
+    const pc = prev.client;
+    const nc = updatedClient;
+    if ((pc.name || "") !== nc.name) parts.push(`Nombre: "${pc.name || "—"}" → "${nc.name}"`);
+    if ((pc.phone || "") !== nc.phone) parts.push(`Teléfono: "${pc.phone || "—"}" → "${nc.phone}"`);
+    if ((pc.email || "") !== nc.email) parts.push(`Email: "${pc.email || "—"}" → "${nc.email}"`);
+    if ((pc.dni || "") !== nc.dni) parts.push(`DNI: "${pc.dni || "—"}" → "${nc.dni}"`);
+  }
+  return parts.length ? parts.join(" · ") : "Sin cambios aparentes (guardado).";
+}
+
+export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair, onUpdateRepair, isLoading, userLocalKey, userRole, userName, onOpenExpress }: ReceptionViewProps) {
   // Branch state (Sede)
   const [workshopBranch, setWorkshopBranch] = useState<WorkshopBranch>(
     (userLocalKey as WorkshopBranch) || "lince_arenales"
@@ -183,6 +230,10 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
   const [editClientPhone, setEditClientPhone] = useState("");
   const [editClientEmail, setEditClientEmail] = useState("");
   const [editClientDni, setEditClientDni] = useState("");
+  const [editAccessories, setEditAccessories] = useState<Accessories>({
+    charger: false, key: false, battery: false, helmet: false, padlock: false, others: ""
+  });
+  const [editReportedFailure, setEditReportedFailure] = useState("");
 
   const handleImportGoogleSheets = async () => {
     if (!sheetUrlInput || !sheetUrlInput.trim()) {
@@ -312,15 +363,17 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
     setClientSearchStatus("idle");
 
     try {
-      // 1) Buscar en Firestore la subcolección del local (clientes/{localKey}/clientes)
+      // 1) Buscar primero en la colección canónica global (clientes/{dni}).
+      // Un DNI es único por persona sin importar la sede: una sola consulta
+      // cubre TODOS los locales, no hace falta buscar local por local.
       let firestoreMatch: any | null = null;
       if (isFirebaseConfigured && db) {
         try {
-          // Primero el registro propio del local
-          const localQ = query(collection(db, "clientes", workshopBranch, "clientes"), where("dni", "==", queryInput));
-          const localSnap = await getDocs(localQ);
-          if (!localSnap.empty) {
-            const d = localSnap.docs[0].data() as any;
+          const q = query(collection(db, "clientes"), where("dni", "==", queryInput));
+          const snap = await getDocs(q);
+          for (const sdoc of snap.docs) {
+            const d = sdoc.data() as any;
+            if (d.archived === true || d.mergedInto) continue;
             const appVehicleType = String(d.vehicleType || "").toLowerCase();
             firestoreMatch = {
               name: d.name || "",
@@ -331,7 +384,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
               vehicleModel: d.vehicleModel || "",
               vehicleType: d.vehicleType || "",
               problemDescription: d.problemDescription || "",
-              source: "Registro de local",
+              source: "App Android Litio Energy",
               vehicleTypeMap:
                 appVehicleType.includes("scooter") || appVehicleType.includes("patin")
                   ? "scooter"
@@ -345,16 +398,16 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                           ? "bici"
                           : "otro"
             };
+            break;
           }
 
-          // 2) Si no hay match en el local, buscar en la colección canónica (App Android)
-          // Acepta clientes de CUALQUIER sede: un DNI es único por persona sin importar la sede de origen
+          // 2) Si no hay match global, buscar en la subcolección del local
+          //    (clientes/{localKey}/clientes) como respaldo.
           if (!firestoreMatch) {
-            const q = query(collection(db, "clientes"), where("dni", "==", queryInput));
-            const snap = await getDocs(q);
-            for (const sdoc of snap.docs) {
-              const d = sdoc.data() as any;
-              if (d.archived === true || d.mergedInto) continue;
+            const localQ = query(collection(db, "clientes", workshopBranch, "clientes"), where("dni", "==", queryInput));
+            const localSnap = await getDocs(localQ);
+            if (!localSnap.empty) {
+              const d = localSnap.docs[0].data() as any;
               const appVehicleType = String(d.vehicleType || "").toLowerCase();
               firestoreMatch = {
                 name: d.name || "",
@@ -365,7 +418,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                 vehicleModel: d.vehicleModel || "",
                 vehicleType: d.vehicleType || "",
                 problemDescription: d.problemDescription || "",
-                source: "App Android Litio Energy",
+                source: "Registro de local",
                 vehicleTypeMap:
                   appVehicleType.includes("scooter") || appVehicleType.includes("patin")
                     ? "scooter"
@@ -379,7 +432,6 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                             ? "bici"
                             : "otro"
               };
-              break;
             }
           }
         } catch (e) {
@@ -421,12 +473,13 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
         const localMatch = repairs.find(
           r =>
             r.status !== "delivered" &&
+            r.status !== "cancelled" &&
             r.workshopBranch === workshopBranch &&
             (r.client?.dni?.toLowerCase().includes(queryInput.toLowerCase()) ||
              r.client?.name?.toLowerCase().includes(queryInput.toLowerCase()))
         );
         if (localMatch) {
-          const clientRepairs = repairs.filter(r => r.workshopBranch === workshopBranch && r.status !== "delivered" && r.client?.dni === localMatch.client?.dni);
+          const clientRepairs = repairs.filter(r => r.workshopBranch === workshopBranch && r.status !== "delivered" && r.status !== "cancelled" && r.client?.dni === localMatch.client?.dni);
           const foundObj = {
             name: localMatch.client.name,
             dni: localMatch.client.dni,
@@ -625,12 +678,13 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
       return;
     }
 
-    if (clientDni && clientDni.trim()) {
-      const doc = clientDni.trim();
-      if (!/^\d{8}$/.test(doc) && !/^\d{11}$/.test(doc)) {
-        alert("El documento ingresado no es válido. Ingrese un DNI (8 dígitos) o un RUC (11 dígitos).");
-        return;
-      }
+    if (!clientDni || !clientDni.trim()) {
+      alert("El documento del cliente es obligatorio. Ingrese un DNI (8 dígitos), un Carnet de Extranjería (C.E) o un RUC (11 dígitos).");
+      return;
+    }
+    if (!detectDocumentType(clientDni.trim())) {
+      alert("El documento ingresado no es válido. Ingrese un DNI (8 dígitos), un Carnet de Extranjería (C.E) o un RUC (11 dígitos).");
+      return;
     }
 
     if (!termsAccepted) {
@@ -673,8 +727,11 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
       if (created) {
         setLastCreatedRepair(created);
         setCreatedId(created.id);
+        setSubmitSuccess(true);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } else {
+        throw new Error("No se pudo sincronizar el vehículo.");
       }
-      setSubmitSuccess(true);
 
       // Reset form
       setClientName("");
@@ -710,7 +767,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
   };
 
   // Fusiona los ingresos de la tablet (repairs) con los de la app Android (clientes sin OT aún)
-  const recentEntries = useMemo(() => {
+  const recentEntries = useMemo<RecentEntry[]>(() => {
     const isAdmin = !userLocalKey;
 
     const filteredRepairs = isAdmin
@@ -746,7 +803,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
         androidRaw: c
       }));
 
-    return [...android, ...repairs.filter(r => r.status !== "delivered")]
+    return [...android, ...repairs.filter(r => r.status !== "delivered" && r.status !== "cancelled")]
       .sort((a, b) => new Date(b.receptionDate).getTime() - new Date(a.receptionDate).getTime());
   }, [androidClients, repairs, workshopBranch, userLocalKey]);
 
@@ -873,11 +930,11 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                         required
                         value={clientDni}
                         onChange={e => {
-                          const val = e.target.value;
+                          const val = e.target.value.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
                           setClientDni(val);
                           if (clientSearchStatus !== "idle") setClientSearchStatus("idle");
                           
-                          if (val.trim().length === 8 || val.trim().length === 11) {
+                          if (val.trim().length >= 8 && detectDocumentType(val.trim())) {
                             handleSearchClientByDni(val.trim());
                           }
                         }}
@@ -887,7 +944,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                             handleSearchClientByDni();
                           }
                         }}
-                        placeholder="Ej. 74839201 (DNI) o 20123456789 (RUC)"
+                        placeholder="Ej. 74839201 (DNI), C.E o 20123456789 (RUC)"
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-800 bg-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 text-slate-100 placeholder:text-slate-600 text-sm transition-all"
                       />
                       <button
@@ -1334,43 +1391,6 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                   <h3 className="font-display font-bold text-sm uppercase tracking-wider">5. Inspección Visual y Evidencia</h3>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  {[
-                    { id: "scratches", label: "No tiene Rayones / Raspones", okValue: false },
-                    { id: "cracks", label: "No tiene Fisuras ni Golpes", okValue: false },
-                    { id: "brakesOk", label: "Frenos Operativos", okValue: true },
-                    { id: "lightsOk", label: "Luces Funcionales", okValue: true },
-                    { id: "screenOk", label: "Pantalla/Display OK", okValue: true },
-                    { id: "tiresOk", label: "Neumáticos/Llantas OK", okValue: true }
-                  ].map(chk => {
-                    const isOk = (visualState[chk.id as keyof VisualState] === true) === chk.okValue;
-                    const isIssue = !isOk;
-
-                    return (
-                      <label
-                        key={chk.id}
-                        className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer select-none transition-all ${
-                          isIssue 
-                            ? "bg-rose-950/20 border-rose-900/40 text-rose-300" 
-                            : "bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-900"
-                        }`}
-                      >
-                        <div className="flex items-center space-x-2">
-                          <input
-                            type="checkbox"
-                            checked={isOk}
-                            onChange={e => handleVisualStateChange(chk.id as keyof VisualState, e.target.checked ? chk.okValue : !chk.okValue)}
-                            className={`rounded border-slate-800 bg-slate-950 h-4 w-4 ${
-                              chk.okValue === false ? "text-teal-500 focus:ring-teal-500" : "text-cyan-500 focus:ring-cyan-500"
-                            }`}
-                          />
-                          <span className="text-xs font-medium">{chk.label}</span>
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
-
                 {/* Evidencia audiovisual (9. Observaciones Generales en PDF) */}
                 <PhotoManager
                   photos={visualState.photos || []}
@@ -1460,7 +1480,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                   <p><strong>4.</strong> Todo vehículo no recogido dentro del plazo establecido podrá generar un cobro adicional por almacenaje.</p>
                   <p><strong>5.</strong> Toda aprobación enviada por WhatsApp o medios digitales oficiales será considerada plenamente válida.</p>
                   <p><strong>6.</strong> <strong>LITIO ENERGY</strong> no se responsabiliza por accesorios u objetos no declarados explícitamente en el presente documento.</p>
-                  <p><strong>7.</strong> Al firmar y confirmar este documento, el cliente acepta expresamente todos los términos y condiciones generales del taller.</p>
+                  <p><strong>7.</strong> Al firmar acepta este documento de Recepción, podrá revisar los términos y condiciones en el link que se le está enviando al WhatsApp.</p>
                 </div>
 
                 {/* Firmas Digitales de Taller (Tablet Canvas) */}
@@ -1570,6 +1590,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                 <p className="text-xs text-slate-500 text-center py-6">No hay vehículos registrados hoy.</p>
               ) : (
                 recentEntries.map(rep => {
+                  const fullRep = rep as RepairItem;
                   const typeIcons: Record<string, string> = {
                     scooter: "🛴",
                     bici: "🚲",
@@ -1604,13 +1625,13 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                   return (
                     <div
                       key={rep.id}
-                      onClick={rep.source === "android" && canFillAndroid ? () => handleApplyAndroidClient(rep.androidRaw) : undefined}
+                      onClick={rep.source === "android" && canFillAndroid ? () => handleApplyAndroidClient((rep as AndroidRecentEntry).androidRaw) : undefined}
                       className={`p-3 bg-slate-950 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs hover:bg-slate-900 transition-colors group ${rep.source === "android" && canFillAndroid ? "cursor-pointer border-green-500/20 hover:border-green-500/50" : ""}`}
                       title={rep.source === "android" && canFillAndroid ? "Clic para llenar el formulario con los datos de la app Android" : undefined}
                     >
                       <div className="space-y-1">
                         <div className="flex items-center space-x-1.5">
-                          <span className="font-bold text-cyan-400 font-mono">{rep.id.startsWith("android-") ? rep.id.slice(8) : rep.id.slice(0, 8)}</span>
+                          <span className="font-bold text-cyan-400 font-mono">{rep.id.startsWith("android-") ? rep.id.slice(8) : rep.id}</span>
                           <span className="text-slate-700">|</span>
                           <span className="font-semibold text-slate-200">{rep.client.name}</span>
                           {rep.source === "android" && (
@@ -1633,7 +1654,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                         <>
                         <button
                           type="button"
-                          onClick={() => generateRepairPdf(rep)}
+                          onClick={() => generateRepairPdf(fullRep)}
                           className="p-1.5 bg-slate-900 text-cyan-400 rounded-lg border border-slate-800 hover:border-cyan-500 hover:bg-cyan-950/20 transition-all cursor-pointer opacity-80 group-hover:opacity-100"
                           title="Imprimir Ficha de Conformidad"
                         >
@@ -1647,8 +1668,10 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                               setEditingRepairId(rep.id);
                               setEditClientName(rep.client.name || "");
                               setEditClientPhone(rep.client.phone || "");
-                              setEditClientEmail(rep.client.email || "");
-                              setEditClientDni(rep.client.dni || "");
+                              setEditClientEmail(fullRep.client.email || "");
+                              setEditClientDni(fullRep.client.dni || "");
+                              setEditAccessories(fullRep.accessories || { charger: false, key: false, battery: false, helmet: false, padlock: false, others: "" });
+                              setEditReportedFailure(fullRep.vehicle?.reportedFailure || "");
                             }}
                             className="p-1.5 bg-slate-900 text-amber-400 rounded-lg border border-slate-800 hover:border-amber-500 hover:bg-amber-950/20 transition-all cursor-pointer opacity-80 group-hover:opacity-100"
                             title="Editar datos del cliente"
@@ -1658,7 +1681,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                         )}
                         <button
                           type="button"
-                          onClick={(e) => { e.stopPropagation(); if (confirm("¿Eliminar este registro?")) onDeleteRepair(rep); }}
+                          onClick={(e) => { e.stopPropagation(); if (onDeleteRepair && confirm("¿Eliminar este registro?")) onDeleteRepair(fullRep); }}
                           className="hidden p-1.5 text-red-400"
                           title="Eliminar registro"
                         >
@@ -2027,11 +2050,11 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">DNI / C.E.</label>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">DNI / C.E / RUC *</label>
                   <input
                     type="text"
                     value={editClientDni}
-                    onChange={(e) => setEditClientDni(e.target.value)}
+                    onChange={(e) => setEditClientDni(e.target.value.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12))}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 font-mono focus:border-amber-500 focus:outline-none transition-colors"
                   />
                 </div>
@@ -2053,6 +2076,61 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:border-amber-500 focus:outline-none transition-colors"
                   />
                 </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                    Accesorios entregados
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: "charger", label: "Cargador", icon: "⚡" },
+                      { id: "key", label: "Llaves / Mando", icon: "🔑" },
+                      { id: "helmet", label: "Casco", icon: "🪖" },
+                      { id: "padlock", label: "Candado", icon: "🔒" },
+                      { id: "battery", label: "Batería Extra", icon: "🔋" }
+                    ].map((acc) => (
+                      <label
+                        key={acc.id}
+                        className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg border cursor-pointer select-none transition-all ${
+                          editAccessories[acc.id as keyof Accessories] === true
+                            ? "bg-amber-500/10 border-amber-500/45 text-amber-400 font-bold"
+                            : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={editAccessories[acc.id as keyof Accessories] === true}
+                          onChange={(e) =>
+                            setEditAccessories((prev) => ({ ...prev, [acc.id]: e.target.checked }))
+                          }
+                          className="rounded border-slate-800 text-amber-500 focus:ring-amber-500 h-4 w-4 bg-slate-950"
+                        />
+                        <span className="text-xs">
+                          <span className="mr-1">{acc.icon}</span>
+                          {acc.label}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <input
+                    type="text"
+                    value={editAccessories.others}
+                    onChange={(e) => setEditAccessories((prev) => ({ ...prev, others: e.target.value }))}
+                    placeholder="Otros accesorios / detalles (ej. casco dejado al día siguiente)"
+                    className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:border-amber-500 focus:outline-none transition-colors"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Síntoma / Falla reportada</label>
+                  <textarea
+                    value={editReportedFailure}
+                    onChange={(e) => setEditReportedFailure(e.target.value)}
+                    rows={2}
+                    placeholder="Ej. No enciende, suena al frenar, casco dejado después de la recepción..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:border-amber-500 focus:outline-none transition-colors resize-none"
+                  />
+                </div>
               </div>
 
               <div className="p-4 border-t border-slate-800 flex items-center justify-between">
@@ -2071,32 +2149,111 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
                       return;
                     }
                     if (onUpdateRepair) {
+                      const nextEditRepair = repairs.find(r => r.id === editingRepairId);
                       const updatedClient = {
                         name: editClientName.trim(),
                         phone: editClientPhone.trim(),
                         email: editClientEmail.trim(),
-                        dni: editClientDni.trim()
+                        dni: editClientDni.trim(),
+                        internalId: nextEditRepair?.client?.internalId
                       };
+                      const detailsEdit = buildEditDetails(nextEditRepair, updatedClient, editAccessories, editReportedFailure.trim());
                       await onUpdateRepair(editingRepairId, {
-                        client: updatedClient
+                        client: updatedClient,
+                        accessories: editAccessories,
+                        vehicle: nextEditRepair
+                          ? { ...nextEditRepair.vehicle, reportedFailure: editReportedFailure.trim() }
+                          : undefined,
+                        extraHistoryLogs: [
+                          {
+                            id: `log_edit_reception_${Date.now()}`,
+                            date: new Date().toISOString(),
+                            status: nextEditRepair?.status || "receptioned",
+                            category: "reception_edit",
+                            details: detailsEdit,
+                            description: "La asesora editó datos de recepción (cliente, accesorios o síntoma).",
+                            user: userName || "Asesora de Servicio"
+                          }
+                        ]
                       });
 
                       if (isFirebaseConfigured && db) {
                         const editRepair = repairs.find(r => r.id === editingRepairId);
                         if (editRepair) {
                           const oldPhone = editRepair.client?.phone;
+                          const oldDni = editRepair.client?.dni;
                           const branch = editRepair.workshopBranch || workshopBranch;
+                          const newDniClean = normalizeDocument(updatedClient.dni);
+                          const oldDniClean = normalizeDocument(oldDni || "");
+                          // Migración: al cambiar el documento (DNI/C.E/RUC) o el teléfono,
+                          // el doc viejo se ARCHIVA (nunca se borra) y se crea/actualiza el
+                          // nuevo. Así no queda un "fantasma" en búsquedas, pero el dato
+                          // histórico se conserva íntegro y es recuperable.
                           if (updatedClient.phone) {
-                            setDoc(doc(db, "clientes", branch, "clientes", updatedClient.phone), updatedClient, { merge: true }).catch(() => {});
+                            const newPhoneId = String(updatedClient.phone).replace(/[^a-zA-Z0-9._-]/g, "_");
+                            await setDoc(doc(db, "clientes", branch, "clientes", newPhoneId), updatedClient, { merge: true });
                             if (oldPhone && oldPhone !== updatedClient.phone) {
-                              setDoc(doc(db, "clientes", branch, "clientes", oldPhone), updatedClient, { merge: true }).catch(() => {});
+                              const oldPhoneId = String(oldPhone).replace(/[^a-zA-Z0-9._-]/g, "_");
+                              const archiveAt = new Date().toISOString();
+                              await updateDoc(doc(db, "clientes", branch, "clientes", oldPhoneId), {
+                                archived: true,
+                                archivedAt: archiveAt,
+                                archivedReason: "telefono_corregido",
+                                supersededBy: newPhoneId
+                              }).catch(() => {});
+                              await updateDoc(doc(db, "clientes", oldPhoneId), {
+                                archived: true,
+                                archivedAt: archiveAt,
+                                archivedReason: "telefono_corregido",
+                                supersededBy: newPhoneId
+                              }).catch(() => {});
                             }
                           }
-                          if (updatedClient.dni) {
-                            setDoc(doc(db, "clientes", updatedClient.dni), updatedClient, { merge: true }).catch(() => {});
+                          const newDniId = canUseAsCanonicalDocId(newDniClean)
+                            ? newDniClean
+                            : (String(updatedClient.phone || updatedClient.dni || "").replace(/[^a-zA-Z0-9._-]/g, "_") || `tablet-${Date.now()}`);
+                          if (newDniClean) {
+                            await setDoc(doc(db, "clientes", newDniId), updatedClient, { merge: true });
                           }
-                          if (editRepair.client?.dni && editRepair.client.dni !== updatedClient.dni) {
-                            setDoc(doc(db, "clientes", editRepair.client.dni), updatedClient, { merge: true }).catch(() => {});
+                          // Si el documento cambió y el anterior era válido, archivar el doc viejo.
+                          if (oldDni && oldDni !== updatedClient.dni && canUseAsCanonicalDocId(oldDniClean)) {
+                            await updateDoc(doc(db, "clientes", oldDniClean), {
+                              archived: true,
+                              archivedAt: new Date().toISOString(),
+                              archivedReason: "documento_corregido",
+                              supersededBy: newDniId
+                            }).catch(() => {});
+                          }
+
+                          // PROPAGACIÓN GLOBAL: corregir el DNI en TODAS las OTs de la misma
+                          // persona (cualquier sede), para que el cambio se vea en todos los
+                          // locales. Se identifica por el documento anterior o el teléfono anterior.
+                          try {
+                            const targets = new Set<string>();
+                            const pushTargets = async (q: any) => {
+                              const snap = await getDocs(q);
+                              snap.docs.forEach((d) => {
+                                const r = d.data() as any;
+                                if (!r?.client) return;
+                                if (r.client.dni === updatedClient.dni) return; // ya tiene el dato nuevo
+                                targets.add(d.id);
+                              });
+                            };
+                            if (oldDni && oldDni !== updatedClient.dni) {
+                              await pushTargets(query(collection(db, "repairs"), where("client.dni", "==", oldDni)));
+                              if (oldDniClean && oldDniClean !== oldDni) {
+                                await pushTargets(query(collection(db, "repairs"), where("client.dni", "==", oldDniClean)));
+                              }
+                            }
+                            if (oldPhone && oldPhone !== updatedClient.phone) {
+                              await pushTargets(query(collection(db, "repairs"), where("client.phone", "==", oldPhone)));
+                            }
+                            for (const rid of targets) {
+                              if (rid === editingRepairId) continue;
+                              await onUpdateRepair(rid, { client: updatedClient });
+                            }
+                          } catch (propErr) {
+                            console.warn("Propagación de DNI a otras OTs no completada:", propErr);
                           }
                         }
                       }

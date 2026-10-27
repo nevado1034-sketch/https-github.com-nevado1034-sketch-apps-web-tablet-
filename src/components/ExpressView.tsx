@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { Printer, Plus, Minus, Store, User, Hash, Receipt, RotateCcw, ChevronDown, ChevronUp, Settings, Trash, Zap, Wrench, XCircle, Check } from "lucide-react";
-import { db, isFirebaseConfigured, collection, doc, getDocs, getDoc, setDoc, query, where, orderBy, limit, serverTimestamp } from "../firebase";
+import { Printer, Plus, Minus, Store, User, Hash, Receipt, RotateCcw, ChevronDown, ChevronUp, Settings, Trash, Zap, Wrench, XCircle, Check, Ban, X } from "lucide-react";
+import { db, isFirebaseConfigured, collection, doc, getDocs, getDoc, setDoc, query, where, orderBy, limit, serverTimestamp, runTransaction } from "../firebase";
 import { nextClientId } from "../data/idGenerator";
 import { normalizeDocument, detectDocumentType, canUseAsCanonicalDocId } from "../data/documentValidator";
 
@@ -35,6 +35,7 @@ interface ExpressReceipt {
   clientName: string;
   clientDni: string;
   clientPhone: string;
+  clientInternalId?: string;
   vehicleType: string;
   technicianName: string;
   createdBy?: string;
@@ -43,6 +44,7 @@ interface ExpressReceipt {
   total: number;
   annulled?: boolean;
   annulledAt?: string;
+  annulReason?: string;
 }
 
 const LOCALES = [
@@ -93,7 +95,7 @@ function sanitizeServices(list: unknown): ExpressService[] {
   const out = list
     .filter((s): s is Partial<ExpressService> => !!s && typeof s === "object")
     .map((s) => {
-      const base = defaults.get(s.id) || { id: s.id || "servicio", name: "Servicio", price: 0 };
+      const base = defaults.get(s.id || "") || { id: s.id || "servicio", name: "Servicio", price: 0 };
       const qty = typeof s.qty === "number" && Number.isFinite(s.qty) ? s.qty : 1;
       return {
         id: base.id,
@@ -109,7 +111,11 @@ function loadServices(key: string): ExpressService[] {
   try {
     const raw = localStorage.getItem(serviceKey(key));
     if (!raw) return DEFAULT_SERVICES.map((s) => ({ ...s }));
-    return sanitizeServices(JSON.parse(raw));
+    const list = sanitizeServices(JSON.parse(raw));
+    // Conserva solo los servicios por defecto; descarta productos personalizados
+    // (custom_...) que se hayan creado y guardado previamente en esta sede.
+    const defaultsOnly = list.filter((s) => DEFAULT_SERVICES.some((d) => d.id === s.id));
+    return defaultsOnly.length ? defaultsOnly : DEFAULT_SERVICES.map((s) => ({ ...s }));
   } catch {
     return DEFAULT_SERVICES.map((s) => ({ ...s }));
   }
@@ -147,7 +153,8 @@ function sanitizeReceipt(raw: unknown): ExpressReceipt {
     items,
     total: num(r.total, items.reduce((s, i) => s + i.subtotal, 0)),
     annulled: r.annulled === true,
-    annulledAt: str(r.annulledAt)
+    annulledAt: str(r.annulledAt),
+    annulReason: str(r.annulReason)
   };
 }
 
@@ -194,7 +201,7 @@ function receiptToFirestore(r: ExpressReceipt, seq: number) {
   return { ...rest, createdBy, seq, createdAt: serverTimestamp() };
 }
 
-function printReceipt(receipt: ExpressReceipt) {
+function buildReceiptHtml(receipt: ExpressReceipt, withToolbar = false): string {
   const itemsHtml = receipt.items
     .map(
       (i) => `
@@ -209,7 +216,7 @@ function printReceipt(receipt: ExpressReceipt) {
 <style>
   @page { size: 80mm auto; margin: 0; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: "Courier New", monospace; font-size: 11px; color: #000; background: #fff; padding: 4mm 5mm; }
+  body { font-family: "Courier New", monospace; font-size: 11px; color: #000; background: #fff; padding: 4mm 5mm; width: 100%; max-width: 80mm; margin: 0 auto; }
   .center { text-align: center; }
   h1 { font-size: 13px; letter-spacing: -0.5px; }
   .muted { font-size: 9px; }
@@ -222,7 +229,16 @@ function printReceipt(receipt: ExpressReceipt) {
   .small { text-align: center; font-size: 8px; }
   .anulado { text-align: center; font-size: 14px; font-weight: 900; color: #dc2626; border: 3px solid #dc2626; border-radius: 4px; padding: 2px 8px; margin: 6px auto; display: inline-block; letter-spacing: 3px; }
   .watermark { position: relative; }
+  @media print { .no-print { display: none !important; } }
+  .toolbar { position: fixed; bottom: 16px; left: 0; right: 0; display: flex; justify-content: center; gap: 12px; z-index: 9999; }
+  .btn { border: none; border-radius: 50px; padding: 10px 18px; font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit; letter-spacing: 0.3px; }
+  .btn-print { background: #0284c7; color: #fff; box-shadow: 0 4px 12px rgba(2,132,199,0.4); }
+  .btn-download { background: #16a34a; color: #fff; box-shadow: 0 4px 12px rgba(22,163,74,0.4); }
 </style></head><body>
+  ${withToolbar ? `<div class="toolbar no-print">
+    <button class="btn btn-download" onclick="window.print()">&#128229; Descargar</button>
+    <button class="btn btn-print" onclick="window.print()">&#128424;&#65039; Imprimir</button>
+  </div>` : ""}
   <div class="center watermark">
     <h1>LITIO<span style="color:#06b6d4">ENERGY</span></h1>
     <p class="muted bold">${esc(receipt.businessName)}</p>
@@ -243,6 +259,7 @@ function printReceipt(receipt: ExpressReceipt) {
   ${receipt.vehicleType ? `<p class="muted">Vehículo: ${esc(receipt.vehicleType)}</p>` : ""}
   ${receipt.clientPhone ? `<p class="muted">Celular: ${esc(receipt.clientPhone)}</p>` : ""}
   ${receipt.annulled ? `<div class="center"><span class="anulado">ANULADO</span></div>` : ""}
+  ${receipt.annulled && receipt.annulReason ? `<p class="muted center" style="margin-top:4px;">Motivo: ${esc(receipt.annulReason)}</p>` : ""}
   <div class="dashed"></div>
   ${itemsHtml}
   <div class="dashed"></div>
@@ -253,6 +270,28 @@ function printReceipt(receipt: ExpressReceipt) {
   <p class="small">Servicio Express &middot; Litio Energy</p>
 </body></html>`;
 
+  return doc;
+}
+
+// Abre el recibo en una pestaña nueva (URL propia) con opciones de descargar / imprimir.
+// Se usa un Blob URL con rel="noopener" para que la pestaña corra en su propio contexto
+// y al imprimir NO bloquee la aplicación de Litio Energy.
+export function openReceipt(receipt: ExpressReceipt) {
+  const blob = new Blob([buildReceiptHtml(receipt, true)], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// Envía el recibo directo a la impresora (sin pestaña intermedia).
+export function printReceipt(receipt: ExpressReceipt) {
+  const doc = buildReceiptHtml(receipt);
   const iframe = document.createElement("iframe");
   iframe.setAttribute("style", "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;pointer-events:none;");
   document.body.appendChild(iframe);
@@ -303,6 +342,9 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [preview, setPreview] = useState<ExpressReceipt | null>(null);
   const [showConfig, setShowConfig] = useState(false);
+  const [annulTarget, setAnnulTarget] = useState<ExpressReceipt | null>(null);
+  const [annulReasonInput, setAnnulReasonInput] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -360,8 +402,8 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
 
   useEffect(() => {
     if (searchStatus === "found" || searchStatus === "busy") return;
-    const digits = clientDni.replace(/\D/g, "");
-    if (digits.length === 8 || digits.length === 11) {
+    const doc = clientDni.trim();
+    if (doc.length >= 8 && detectDocumentType(doc)) {
       const t = setTimeout(() => {
         handleSearchClient();
       }, 350);
@@ -453,57 +495,52 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
       alert("Selecciona al menos un servicio (cantidad mayor a 0) para generar el recibo.");
       return;
     }
-    if (clientDni.trim() && !/^(\d{8}|\d{11})$/.test(clientDni.trim())) {
-      alert("El DNI debe tener 8 dígitos o el RUC 11 dígitos.");
+    if (!clientDni.trim()) {
+      alert("El documento del cliente es obligatorio. Ingrese un DNI (8 dígitos), un Carnet de Extranjería (C.E) o un RUC (11 dígitos).");
+      return;
+    }
+    if (!detectDocumentType(clientDni.trim())) {
+      alert("El documento ingresado no es válido. Ingrese un DNI (8 dígitos), un Carnet de Extranjería (C.E) o un RUC (11 dígitos).");
+      return;
+    }
+    if (!clientPhone.trim()) {
+      alert("El teléfono del cliente es obligatorio para generar el recibo.");
+      return;
+    }
+    if (!technicianName.trim()) {
+      alert("El técnico asignado es obligatorio para generar el recibo.");
       return;
     }
 
-    let count = loadCount(localKey);
-    let maxSeq = history.reduce((m, r) => Math.max(m, r.seq || 0), 0);
+    const count = loadCount(localKey);
+    const maxSeq = history.reduce((m, r) => Math.max(m, r.seq || 0), 0);
+    let nextCount = count + 1;
     if (isFirebaseConfigured && db) {
+      // Asignación atómica del correlativo con transacción Firestore: dos asesoras
+      // en el mismo local nunca obtienen el mismo número, aunque generen a la vez.
       const metaRef = doc(db, "recibos_express", localKey, "meta", "count");
       try {
-        const metaSnap = await getDoc(metaRef);
-        const metaCount = metaSnap.exists() && typeof metaSnap.data().count === "number" ? metaSnap.data().count : 0;
-        count = Math.max(metaCount, count, maxSeq);
-      } catch {}
-    }
-    const nextCount = count + 1;
-    const correlative = `E-${new Date().getFullYear()}-${String(nextCount).padStart(4, "0")}`;
-    const receipt: ExpressReceipt = {
-      correlative,
-      date: new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" }),
-      localKey,
-      localName: localName(localKey),
-      localAddress: config.address || LOCALES.find((l) => l.key === localKey)?.address || "",
-      businessName: config.businessName || "GRUPO PERU CREARTE S.A.C.",
-      ruc: config.ruc,
-      clientName: clientName.trim(),
-      clientDni: clientDni.trim(),
-      clientPhone: clientPhone.trim(),
-      vehicleType: vehicleType.trim(),
-      technicianName: technicianName.trim(),
-      createdBy: userName || "",
-      seq: nextCount,
-      items,
-      total: items.reduce((sum, i) => sum + i.subtotal, 0)
-    };
-    setPreview(receipt);
-
-    if (isFirebaseConfigured && db) {
-      try {
-        await setDoc(doc(db, "recibos_express", localKey, "meta", "count"), { count: nextCount }, { merge: true });
-        await setDoc(doc(db, "recibos_express", localKey, "recibos", correlative), receiptToFirestore(receipt, nextCount));
-      } catch (e) {
-        console.error("Error guardando recibo en Firestore:", e);
+        nextCount = await runTransaction(db, async (transaction) => {
+          const metaSnap = await transaction.get(metaRef);
+          const metaCount = metaSnap.exists() && typeof metaSnap.data().count === "number" ? metaSnap.data().count : 0;
+          const next = Math.max(metaCount, count, maxSeq) + 1;
+          transaction.set(metaRef, { count: next, lastUpdated: new Date().toISOString() }, { merge: true });
+          return next;
+        });
+      } catch {
+        nextCount = Math.max(count, maxSeq) + 1;
       }
     }
+    const correlative = `E-${new Date().getFullYear()}-${String(nextCount).padStart(4, "0")}`;
 
-    // Sincronizar cliente del Express: dar ID interno CLI-XXXXXX si es nuevo
+    // Sincronizar cliente del Express: dar ID interno CLI-XXXXXX si es nuevo.
+    // Se resuelve ANTES de guardar el recibo para poder dejar el recibo enlazado
+    // por internalId (misma identidad que las OT).
+    let clientInternalId = "";
     if (isFirebaseConfigured && db) {
       try {
-        const dniSync = normalizeDocument(receipt.clientDni || "");
-        const phoneSync = receipt.clientPhone || "";
+        const dniSync = normalizeDocument(clientDni || "");
+        const phoneSync = clientPhone.trim();
         // Solo un documento bien formado (DNI/RUC o Carné de Extranjería con letra)
         // puede usarse como id del doc canónico; un DNI mal tecleado nunca crea un
         // documento "clientes/{dniRoto}".
@@ -539,6 +576,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
         }
         const existingData = existing.exists() ? (existing.data() as any) : null;
         const internalId = existingData?.internalId || await nextClientId();
+        clientInternalId = internalId;
         // Consolidación de teléfonos: conservar el principal original y guardar el
         // número nuevo como phone2 en el mismo documento (sin crear otro ID).
         let phoneMain = phoneSync;
@@ -551,11 +589,11 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
         }
         const clientDoc: any = {
           internalId,
-          name: receipt.clientName || "",
+          name: clientName.trim(),
           phone: phoneMain,
           dni: dniSync,
           docType: detectDocumentType(dniSync),
-          vehicleType: receipt.vehicleType || "",
+          vehicleType: vehicleType.trim(),
           source: existingData?.source === "tablet" ? "tablet" : "express",
           createdAt: existingData?.createdAt || Date.now(),
           updatedAt: Date.now()
@@ -564,6 +602,36 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
         await setDoc(clientRef, clientDoc, { merge: true });
       } catch (e) {
         console.error("Error sincronizando cliente Express:", e);
+      }
+    }
+
+    const receipt: ExpressReceipt = {
+      correlative,
+      date: new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" }),
+      localKey,
+      localName: localName(localKey),
+      localAddress: config.address || LOCALES.find((l) => l.key === localKey)?.address || "",
+      businessName: config.businessName || "GRUPO PERU CREARTE S.A.C.",
+      ruc: config.ruc,
+      clientName: clientName.trim(),
+      clientDni: clientDni.trim(),
+      clientPhone: clientPhone.trim(),
+      clientInternalId,
+      vehicleType: vehicleType.trim(),
+      technicianName: technicianName.trim(),
+      createdBy: userName || "",
+      seq: nextCount,
+      items,
+      total: items.reduce((sum, i) => sum + i.subtotal, 0)
+    };
+    setPreview(receipt);
+
+    if (isFirebaseConfigured && db) {
+      try {
+        // El contador ya se actualizó de forma atómica en la transacción; solo guardamos el recibo.
+        await setDoc(doc(db, "recibos_express", localKey, "recibos", correlative), receiptToFirestore(receipt, nextCount));
+      } catch (e) {
+        console.error("Error guardando recibo en Firestore:", e);
       }
     }
 
@@ -586,12 +654,15 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
     printReceipt(preview);
   };
 
-  const toggleAnnulled = (corr: string) => {
+  const toggleAnnulled = (corr: string, reason?: string) => {
     const target = history.find((x) => x.correlative === corr);
     if (!target) return;
     const annulled = !target.annulled;
+    const reasonClean = annulled ? (reason || "").trim() : "";
     const updated = history.map((x) =>
-      x.correlative === corr ? { ...x, annulled, annulledAt: annulled ? new Date().toISOString() : "" } : x
+      x.correlative === corr
+        ? { ...x, annulled, annulledAt: annulled ? new Date().toISOString() : "", annulReason: reasonClean || "" }
+        : x
     );
     setHistory(updated);
     try {
@@ -603,7 +674,8 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
         docRef,
         {
           annulled,
-          annulledAt: annulled ? new Date().toISOString() : null
+          annulledAt: annulled ? new Date().toISOString() : null,
+          annulReason: annulled ? reasonClean : ""
         },
         { merge: true }
       ).catch(() => {});
@@ -705,17 +777,17 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="sm:col-span-2">
-                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">DNI / C.E / RUC</label>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">DNI / C.E / RUC <span className="text-rose-400">*</span></label>
                   <div className="flex gap-2">
                     <input
                       type="text"
                       autoComplete="off"
                       value={clientDni}
                       onChange={(e) => {
-                        setClientDni(e.target.value.replace(/[^\d]/g, "").slice(0, 11));
+                        setClientDni(e.target.value.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12));
                         setSearchStatus(null);
                       }}
-                      placeholder="8 o 11 dígitos"
+                      placeholder="DNI (8), C.E (9) o RUC (11)"
                       className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-cyan-500/50"
                     />
                     <button
@@ -745,7 +817,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Celular</label>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Celular <span className="text-rose-400">*</span></label>
                   <input
                     type="text"
                     autoComplete="off"
@@ -767,7 +839,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Técnico que realizó el trabajo</label>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Técnico que realizó el trabajo <span className="text-rose-400">*</span></label>
                   <input
                     type="text"
                     autoComplete="off"
@@ -799,7 +871,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                   <button
                     onClick={resetPrices}
                     title="Restaurar precios originales"
-                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-[10px] font-bold text-slate-300 flex items-center space-x-1 transition-colors"
+                    className="hidden px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-[10px] font-bold text-slate-300 flex items-center space-x-1 transition-colors"
                   >
                     <Hash className="w-3 h-3" />
                     <span>Precios base</span>
@@ -807,69 +879,96 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1">
                 {services.map((s) => (
                   <div
                     key={s.id}
-                    className={`flex items-center gap-2 p-2 rounded-xl border transition-colors ${
+                    className={`rounded-xl border transition-colors ${
                       s.qty > 0 ? "bg-cyan-500/5 border-cyan-500/40" : "bg-slate-950/60 border-slate-800"
                     }`}
                   >
+                    {/* Fila colapsada: nombre + subtotal + chevron */}
                     <button
-                      onClick={() => setQty(s.id, s.qty - 1)}
-                      className="w-8 h-8 shrink-0 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
-                      title="Quitar"
+                      type="button"
+                      onClick={() => setExpandedId(expandedId === s.id ? null : s.id)}
+                      className="w-full flex items-center justify-between gap-2 p-2 rounded-xl hover:bg-slate-950/40 transition-colors"
+                      title={expandedId === s.id ? "Ocultar controles" : "Abrir controles del servicio"}
                     >
-                      <Minus className="w-3.5 h-3.5" />
+                      <span className="flex-1 text-xs font-semibold text-slate-200 truncate text-left">
+                        {s.name}
+                      </span>
+                      <span className="flex items-center space-x-3 shrink-0">
+                        <span className="w-20 text-right text-xs font-bold text-cyan-300">{money(s.price * s.qty)}</span>
+                        <span
+                          className={`flex items-center justify-center transition-transform ${
+                            expandedId === s.id ? "rotate-180 text-cyan-300" : "text-slate-500"
+                          }`}
+                        >
+                          <ChevronDown className="w-4 h-4" />
+                        </span>
+                      </span>
                     </button>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={s.qty}
-                      onChange={(e) => setQty(s.id, parseInt(e.target.value, 10) || 0)}
-                      className="w-12 shrink-0 px-1 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-center text-sm font-bold text-cyan-300 focus:outline-none focus:border-cyan-500/50"
-                    />
-                    <button
-                      onClick={() => setQty(s.id, s.qty + 1)}
-                      className="w-8 h-8 shrink-0 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
-                      title="Agregar"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
-                    {isCustomService(s.id) ? (
-                      <input
-                        type="text"
-                        autoComplete="off"
-                        value={s.name}
-                        onChange={(e) => updateServiceName(s.id, e.target.value)}
-                        placeholder="Nombre del producto"
-                        className="flex-1 min-w-0 px-2 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-semibold text-slate-100 focus:outline-none focus:border-cyan-500/50"
-                      />
-                    ) : (
-                      <span className="flex-1 text-xs font-semibold text-slate-200 truncate">{s.name}</span>
+
+                    {/* Controles expandidos */}
+                    {expandedId === s.id && (
+                      <div className="flex items-center gap-2 px-2 pb-2 border-t border-slate-800/60 pt-2">
+                        <button
+                          onClick={() => setQty(s.id, s.qty - 1)}
+                          className="w-8 h-8 shrink-0 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
+                          title="Quitar"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          value={s.qty}
+                          onChange={(e) => setQty(s.id, parseInt(e.target.value, 10) || 0)}
+                          className="w-12 shrink-0 px-1 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-center text-sm font-bold text-cyan-300 focus:outline-none focus:border-cyan-500/50"
+                        />
+                        <button
+                          onClick={() => setQty(s.id, s.qty + 1)}
+                          className="w-8 h-8 shrink-0 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors"
+                          title="Agregar"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                        {isCustomService(s.id) ? (
+                          <input
+                            type="text"
+                            autoComplete="off"
+                            value={s.name}
+                            onChange={(e) => updateServiceName(s.id, e.target.value)}
+                            placeholder="Nombre del producto"
+                            className="flex-1 min-w-0 px-2 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-semibold text-slate-100 focus:outline-none focus:border-cyan-500/50"
+                          />
+                        ) : (
+                          <span className="flex-1 text-xs font-semibold text-slate-200 truncate">{s.name}</span>
+                        )}
+                        <div className="flex items-center space-x-1 shrink-0">
+                          <span className="text-[10px] font-bold text-slate-500">S/</span>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            pattern="[0-9]*\.?[0-9]*"
+                            value={s.price}
+                            onChange={(e) => setPrice(s.id, e.target.value)}
+                            className="w-16 px-1.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-sm font-bold text-slate-100 text-right focus:outline-none focus:border-cyan-500/50"
+                          />
+                        </div>
+                        {isCustomService(s.id) && (
+                          <button
+                            onClick={() => removeService(s.id)}
+                            className="shrink-0 px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-[10px] font-bold flex items-center space-x-1 transition-colors"
+                            title="Eliminar producto"
+                          >
+                            <Trash className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Eliminar</span>
+                          </button>
+                        )}
+                      </div>
                     )}
-                    <div className="flex items-center space-x-1 shrink-0">
-                      <span className="text-[10px] font-bold text-slate-500">S/</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        pattern="[0-9]*\.?[0-9]*"
-                        value={s.price}
-                        onChange={(e) => setPrice(s.id, e.target.value)}
-                        className="w-16 px-1.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-sm font-bold text-slate-100 text-right focus:outline-none focus:border-cyan-500/50"
-                      />
-                    </div>
-                    {isCustomService(s.id) && (
-                      <button
-                        onClick={() => removeService(s.id)}
-                        className="w-8 h-8 shrink-0 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 flex items-center justify-center transition-colors"
-                        title="Eliminar producto"
-                      >
-                        <Trash className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                    <span className="w-20 shrink-0 text-right text-xs font-bold text-cyan-300">{money(s.price * s.qty)}</span>
                   </div>
                 ))}
               </div>
@@ -951,6 +1050,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                         <p className={`text-xs font-bold font-mono ${r.annulled ? "text-rose-400 line-through" : "text-cyan-300"}`}>{r.correlative}</p>
                         <p className="text-[10px] text-slate-500 truncate">
                           {r.annulled ? "ANULADO · " : ""}
+                          {r.annulled && r.annulReason ? <span className="text-rose-400/80">Motivo: {r.annulReason} · </span> : ""}
                           {r.clientName || "Sin cliente"} · {r.date}
                         </p>
                       </div>
@@ -960,9 +1060,12 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                           onClick={(e) => {
                             e.stopPropagation();
                             if (r.annulled) {
-                              toggleAnnulled(r.correlative);
-                            } else if (confirm(`¿Anular el recibo ${r.correlative}? No se eliminará, quedará marcado como ANULADO.`)) {
-                              toggleAnnulled(r.correlative);
+                              if (confirm(`¿Restaurar el recibo ${r.correlative}? Volverá a ser un recibo válido.`)) {
+                                toggleAnnulled(r.correlative);
+                              }
+                            } else {
+                              setAnnulTarget(r);
+                              setAnnulReasonInput("");
                             }
                           }}
                           className={`p-1.5 rounded-lg border transition-colors ${
@@ -983,11 +1086,71 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
           </div>
         </div>
       </div>
+      {annulTarget && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-rose-800/60 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-4 border-b border-slate-800 flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400">
+                <Ban className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-slate-100 uppercase tracking-wider">Anular Recibo</h3>
+                <p className="text-[11px] text-slate-500">
+                  {annulTarget.correlative} · {annulTarget.clientName || "Sin cliente"} · {localShort(localKey)}
+                </p>
+              </div>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="text-[11px] text-slate-400 leading-relaxed bg-slate-950 rounded-xl border border-slate-800 p-3">
+                El recibo quedará marcado como <strong className="text-rose-400">ANULADO</strong> y conservará un historial de venta. Solo es válido para anulaciones del mismo día o errores de registro.
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  Motivo de anulación *
+                </label>
+                <textarea
+                  value={annulReasonInput}
+                  onChange={(e) => setAnnulReasonInput(e.target.value)}
+                  rows={3}
+                  placeholder="Ej. Error de cobro, cliente se retractó, producto sin stock, etc."
+                  autoFocus
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:border-rose-500/60 focus:outline-none transition-colors resize-none"
+                />
+              </div>
+            </div>
+            <div className="p-4 border-t border-slate-800 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setAnnulTarget(null)}
+                className="flex items-center gap-1.5 px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                Volver
+              </button>
+              <button
+                type="button"
+                disabled={!annulReasonInput.trim()}
+                onClick={() => {
+                  if (!annulReasonInput.trim()) return;
+                  const corr = annulTarget.correlative;
+                  setAnnulTarget(null);
+                  toggleAnnulled(corr, annulReasonInput.trim());
+                  alert(`Recibo ${corr} anulado. Motivo registrado: "${annulReasonInput.trim()}"`);
+                }}
+                className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer shadow-lg shadow-rose-600/20"
+              >
+                <Ban className="w-3.5 h-3.5" />
+                Anular Recibo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
-function ReceiptPaper({ receipt }: { receipt: ExpressReceipt }) {
+export function ReceiptPaper({ receipt }: { receipt: ExpressReceipt }) {
   return (
     <div
       id="express-receipt-print"
@@ -1042,6 +1205,9 @@ function ReceiptPaper({ receipt }: { receipt: ExpressReceipt }) {
         <p className="text-center text-[8px]">Servicio Express · Litio Energy</p>
         {receipt.annulled && (
           <p className="text-center text-[9px] font-black text-rose-600 mt-2">*** RECIBO ANULADO ***</p>
+        )}
+        {receipt.annulled && receipt.annulReason && (
+          <p className="text-[9px] font-semibold text-rose-600 mt-1">Motivo: {receipt.annulReason}</p>
         )}
       </div>
     </div>

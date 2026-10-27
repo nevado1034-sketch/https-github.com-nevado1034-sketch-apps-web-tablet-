@@ -1,7 +1,8 @@
-import { db, collection, doc, getDocs, setDoc, query, where, onSnapshot, serverTimestamp } from "../firebase";
+import { db, collection, doc, getDoc, getDocs, setDoc, query, where, onSnapshot, serverTimestamp } from "../firebase";
 import { isFirebaseConfigured } from "../firebase";
 import type { Cliente } from "./types";
 import { nextClientId } from "./idGenerator";
+import { normalizeDocument, canUseAsCanonicalDocId } from "./documentValidator";
 
 /**
  * Client Service — normalized client entity.
@@ -27,6 +28,8 @@ function cleanDni(dni: string): string {
 
 /**
  * Search for an existing client by DNI or phone.
+ * Se prioriza el documento canónico (id = DNI normalizado) sobre los
+ * ids de la estructura antigua (CLI-XXXXXX) para no crear duplicados.
  * Returns the matching Cliente or null.
  */
 export async function findExistingClient(dni: string, phone: string): Promise<Cliente | null> {
@@ -34,8 +37,17 @@ export async function findExistingClient(dni: string, phone: string): Promise<Cl
 
   const cleanD = cleanDni(dni);
   const cleanP = cleanPhone(phone);
+  const dniNormalized = normalizeDocument(dni);
 
-  // Search by DNI first (authoritative)
+  // 1. Canónico directo: clientes/{dniNormalizado} (si el DNI es válido como id)
+  if (dniNormalized && canUseAsCanonicalDocId(dniNormalized)) {
+    const canonicalSnap = await getDoc(doc(db, CLIENTES_COLLECTION, dniNormalized));
+    if (canonicalSnap.exists() && canonicalSnap.data()?.archived !== true && !canonicalSnap.data()?.mergedInto) {
+      return { id: canonicalSnap.id, ...canonicalSnap.data() } as Cliente;
+    }
+  }
+
+  // 2. Search by DNI (authoritative)
   if (cleanD) {
     const dniQuery = query(
       collection(db, CLIENTES_COLLECTION),
@@ -43,12 +55,13 @@ export async function findExistingClient(dni: string, phone: string): Promise<Cl
     );
     const dniSnap = await getDocs(dniQuery);
     if (!dniSnap.empty) {
-      const doc = dniSnap.docs[0];
+      const docs = dniSnap.docs.filter((d) => d.data()?.archived !== true && !d.data()?.mergedInto);
+      const doc = docs[0] || dniSnap.docs[0];
       return { id: doc.id, ...doc.data() } as Cliente;
     }
   }
 
-  // Search by phone
+  // 3. Search by phone
   if (cleanP) {
     const phoneQuery = query(
       collection(db, CLIENTES_COLLECTION),
@@ -56,7 +69,8 @@ export async function findExistingClient(dni: string, phone: string): Promise<Cl
     );
     const phoneSnap = await getDocs(phoneQuery);
     if (!phoneSnap.empty) {
-      const doc = phoneSnap.docs[0];
+      const docs = phoneSnap.docs.filter((d) => d.data()?.archived !== true && !d.data()?.mergedInto);
+      const doc = docs[0] || phoneSnap.docs[0];
       return { id: doc.id, ...doc.data() } as Cliente;
     }
   }
@@ -96,7 +110,8 @@ export async function upsertClient(data: {
   const now = new Date().toISOString();
 
   if (existing) {
-    // Update existing client
+    // Update existing client (conserva el ref canónico existente y el internalId)
+    const existingData: any = existing as any;
     const updated: Cliente = {
       ...existing,
       name: data.name || existing.name,
@@ -106,12 +121,18 @@ export async function upsertClient(data: {
       totalOrders: existing.totalOrders + 1,
       updatedAt: now,
     };
-    await setDoc(doc(db, CLIENTES_COLLECTION, existing.id), updated, { merge: true });
+    const payload: any = { ...updated };
+    payload.internalId = existingData.internalId || (existing.id.startsWith("CLI-") ? existing.id : "");
+    await setDoc(doc(db, CLIENTES_COLLECTION, existing.id), payload, { merge: true });
     return updated;
   }
 
-  // Create new client
-  const id = await nextClientId();
+  // Create new client. Si el DNI es válido, el id del doc canónico es "clientes/{dni}"
+  // (mismo estándar que App.tsx y ExpressView) y el internalId refiere al CLI-XXXXXX.
+  const dniStored = normalizeDocument(data.dni);
+  const dniEsIdValido = canUseAsCanonicalDocId(dniStored);
+  const internalId = await nextClientId();
+  const id = dniEsIdValido ? dniStored : internalId;
   const newClient: Cliente = {
     id,
     name: data.name,
@@ -122,7 +143,8 @@ export async function upsertClient(data: {
     updatedAt: now,
     totalOrders: 1,
   };
-  await setDoc(doc(db, CLIENTES_COLLECTION, id), newClient);
+  const payload: any = { ...newClient, internalId };
+  await setDoc(doc(db, CLIENTES_COLLECTION, id), payload);
   return newClient;
 }
 

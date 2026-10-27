@@ -55,6 +55,14 @@ const statusLabels: Record<string, string> = {
   delivered: "Entregado"
 };
 
+const serviceMeta: Record<string, { label: string; bg: string; text: string; border: string }> = {
+  mantenimiento: { label: "Mantenimiento", bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-emerald-500/30" },
+  diagnostico: { label: "Diagnóstico", bg: "bg-cyan-500/15", text: "text-cyan-400", border: "border-cyan-500/30" },
+  garantia: { label: "Garantía", bg: "bg-violet-500/15", text: "text-violet-400", border: "border-violet-500/30" },
+  cambio: { label: "Cambio / Repuesto", bg: "bg-amber-500/15", text: "text-amber-400", border: "border-amber-500/30" },
+  express: { label: "Servicio Express", bg: "bg-rose-500/15", text: "text-rose-400", border: "border-rose-500/30" }
+};
+
 const fmt = (n?: number): string => {
   if (n === undefined || n === null || isNaN(n)) return "S/ 0.00";
   return `S/ ${n.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -97,7 +105,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
 
   // Agregar repuesto/servicio desde presupuesto
   const [newPartDesc, setNewPartDesc] = useState("");
-  const [newPartType, setNewPartType] = useState<"cambio" | "reparacion">("cambio");
+  const [newPartType, setNewPartType] = useState<"cambio" | "reparacion" | "mantenimiento">("cambio");
   const [newPartSource, setNewPartSource] = useState<"tecnico" | "cliente">("cliente");
 
   // Pago del presupuesto (adelanto, método y observaciones) que define la jefa
@@ -179,7 +187,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
       "",
       "Somos *Litio Energy*, taller especialista en vehiculos electricos.",
       "",
-      `Te saludamos y queremos informarte que tu *${r.vehicle.brand} ${r.vehicle.model}* ya fue diagnosticado en nuestra sede ${branchNames[r.workshopBranch] || r.workshopBranch}.`,
+      `Te saludamos y queremos informarte que tu *${r.vehicle.brand} ${r.vehicle.model}* ya ingresó a nuestro taller en ${branchNames[r.workshopBranch] || r.workshopBranch} y te presentamos el detalle de repuestos y costos.`,
       "",
       "Ingresa al siguiente enlace para ver *toda la informacion* de tu vehiculo electrico y tu detalle de repuestos y costos:",
       link,
@@ -268,7 +276,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
           <span>Presupuesto y Pago</span>
         </h2>
         <p className="text-sm text-slate-400 mt-1">
-          Clientes diagnosticados por el técnico. Haz clic en el nombre para colocar el precio de repuestos y mano de obra.
+          Presupuestos enviados desde la Mesa de Trabajo del técnico. Haz clic en el nombre para colocar el precio de repuestos y mano de obra.
         </p>
       </div>
 
@@ -276,7 +284,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center text-slate-500 space-y-3">
           <Package className="w-12 h-12 text-slate-700 mx-auto" />
           <p className="text-sm">
-            Aún no hay clientes diagnosticados con repuestos. Cuando el técnico registre los repuestos o trabajos detectados en el Diagnóstico, aparecerán aquí.
+            Aún no hay presupuestos por tasar. Cuando el técnico envíe la orden desde su Mesa de Trabajo, aparecerá aquí.
           </p>
         </div>
       ) : (
@@ -311,6 +319,15 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
                         <span>{rep.vehicle.brand} {rep.vehicle.model} ({typeLabels[rep.vehicle.type] || rep.vehicle.type})</span>
                       </p>
                       <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                        {(() => {
+                          const sm = serviceMeta[rep.serviceType || "diagnostico"];
+                          return (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full border font-mono ${sm.bg} ${sm.text} ${sm.border}`}>
+                              {sm.label}
+                              {rep.serviceTypeDetail ? ` · ${rep.serviceTypeDetail}` : ""}
+                            </span>
+                          );
+                        })()}
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-950 text-cyan-400 border border-slate-800 font-mono">
                           {statusLabels[rep.status] || rep.status}
                         </span>
@@ -610,7 +627,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
                         </span>
                       )}
 
-                      {rep.status === "paid" && rep.approvalStatus === "aprobado" && (
+                      {(rep.status === "quoted" || rep.status === "paid") && (
                         <div className="relative">
                           <button
                             type="button"
@@ -651,7 +668,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
                                       <User className="w-3.5 h-3.5 shrink-0" />
                                       <span className="truncate">{tn}</span>
                                       {isDiag && (
-                                        <span className="ml-auto text-[9px] font-black text-amber-400 uppercase shrink-0">Diagnóstico</span>
+                                        <span className="ml-auto text-[9px] font-black text-amber-400 uppercase shrink-0">Asignado</span>
                                       )}
                                     </button>
                                   );

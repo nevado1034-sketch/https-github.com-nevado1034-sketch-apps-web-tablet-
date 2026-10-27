@@ -112,7 +112,9 @@ export default function OrdenPublica({ orderId }: OrdenPublicaProps) {
       await updateDoc(doc(db, "repairs", orderId), {
         approvalStatus: status,
         approvalResponseAt: new Date().toISOString(),
-        ...(status === "aprobado" ? { status: "paid" } : {})
+        ...(status === "aprobado" && ["receptioned", "diagnosing", "quoted", "paid"].includes(repair.status)
+          ? { status: "paid" }
+          : {})
       });
       setRepair((r) =>
         r

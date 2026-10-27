@@ -36,7 +36,8 @@ export function buildRepairOrderHtml(repair: RepairItem): string {
     repairing: "En Reparación",
     testing: "En Pruebas de Calidad",
     ready: "Listo para Entrega",
-    delivered: "Entregado (Servicio Completado)"
+    delivered: "Entregado (Servicio Completado)",
+    cancelled: "Cancelado"
   };
 
   const batteryLabels: Record<string, string> = {
@@ -630,15 +631,6 @@ export function buildRepairOrderHtml(repair: RepairItem): string {
         </div>
         <div class="checklist-item ${repair.accessories.padlock ? "checked" : "neutral"}">
           🔒 Candado/Traba: ${repair.accessories.padlock ? "SÍ" : "NO"}
-        </div>
-        <div class="checklist-item ${repair.visualState.brakesOk ? "checked" : "unchecked"}">
-          🛑 Frenos: ${repair.visualState.brakesOk ? "OK" : "REVISAR"}
-        </div>
-        <div class="checklist-item ${repair.visualState.lightsOk ? "checked" : "unchecked"}">
-          💡 Luces/Faros: ${repair.visualState.lightsOk ? "OK" : "REVISAR"}
-        </div>
-        <div class="checklist-item ${repair.visualState.screenOk ? "checked" : "unchecked"}">
-          📺 Display/Pantalla: ${repair.visualState.screenOk ? "OK" : "REVISAR"}
         </div>
       </div>
 
