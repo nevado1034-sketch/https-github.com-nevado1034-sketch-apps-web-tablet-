@@ -16,6 +16,16 @@ import { periodRange, type PeriodKey } from "./metrics";
 // ellos el cronómetro debe cerrarse automáticamente para no inflar el tiempo.
 export const CLOSED_STATUSES: RepairStatus[] = ["testing", "ready", "delivered", "cancelled"];
 
+// Estados en los que el vehículo ya no está siendo trabajado por el técnico,
+// aunque la orden siga abierta (esperando presupuesto, pago o calidad).
+// El cronómetro debe pausarse también aquí: si el técnico olvida pausar,
+// el tiempo de espera del cliente no debe contarse como producción.
+export const TIMER_STOP_STATUSES: RepairStatus[] = [
+  "quoted",
+  "paid",
+  ...CLOSED_STATUSES
+];
+
 // Estados que cuentan como "trabajo terminado" para el resumen de producción.
 // "cancelled" se conserva en la tabla (y sus horas), pero no como trabajo logrado.
 export const FINISHED_STATUSES: RepairStatus[] = ["testing", "ready", "delivered"];
@@ -77,6 +87,15 @@ export function isClosedStatus(status: RepairStatus | string | undefined): boole
   return !!status && (CLOSED_STATUSES as string[]).includes(status);
 }
 
+/**
+ * ¿El cronómetro debe estar detenido en este estado?
+ * Incluye presupuesto y pago: el vehículo ya no está en manos del técnico
+ * mientras el cliente decide o paga. No incluye los estados "en curso".
+ */
+export function shouldStopTimer(status: RepairStatus | string | undefined): boolean {
+  return !!status && (TIMER_STOP_STATUSES as string[]).includes(status);
+}
+
 /** ¿Cuenta como trabajo terminado para el resumen? */
 export function isFinishedStatus(status: RepairStatus | string | undefined): boolean {
   return !!status && (FINISHED_STATUSES as string[]).includes(status);
@@ -109,11 +128,12 @@ export function assignmentInfo(r: RepairItem): { at: number | null; by: string }
 
 /**
  * Momento en que la orden dejó la mesa del técnico (para topear el tiempo).
- * Usa la primera marca del estado de cierre; si no hay historial confiable,
- * cae a la última acción del cronómetro.
+ * Usa la marca MÁS RECIENTE del estado actual: si la orden pasó dos veces por
+ * Control de Calidad, el cierre válido es el último ingreso, no el primero.
+ * Si no hay historial confiable, cae a la última acción del cronómetro.
  */
 export function workClosedAt(r: RepairItem): number | null {
-  if (!isClosedStatus(r.status)) return null;
+  if (!shouldStopTimer(r.status)) return null;
   const candidates: number[] = [];
 
   const delivered = validTs(r.deliveredAt);
@@ -123,7 +143,7 @@ export function workClosedAt(r: RepairItem): number | null {
     .filter((log) => log.status === r.status)
     .map((log) => validTs(log.date))
     .filter((t): t is number => t !== null);
-  if (statusTimes.length) candidates.push(Math.min(...statusTimes));
+  if (statusTimes.length) candidates.push(Math.max(...statusTimes));
 
   if (!candidates.length) {
     const workTimes = (r.workLog || [])

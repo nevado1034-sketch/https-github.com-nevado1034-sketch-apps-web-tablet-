@@ -37,17 +37,17 @@ import {
   closeRunningWorkLog,
   computeNetWorkMs,
   hasRegisteredWorkTime,
-  isClosedStatus,
   isWorkLogRunning,
   matchesAssignedTechnician,
   sameTechnician,
+  shouldStopTimer,
   workClosedAt
 } from "../data/technicianProduction";
 import litioLogo from "../assets/litio-logo.png";
 
 interface TechnicianViewProps {
   repairs: RepairItem[];
-  onUpdateRepair: (id: string, updateData: any) => Promise<void>;
+  onUpdateRepair: (id: string, updateData: any) => Promise<any>;
   isLoading: boolean;
   userLocalKey?: string;
   userName?: string;
@@ -100,6 +100,12 @@ const matchesAssignedTech = (assignedTech: string | undefined, userName: string 
 export default function TechnicianView({ repairs, onUpdateRepair, isLoading, userLocalKey, userName, userRole, initialMode }: TechnicianViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(repairs[0]?.id || null);
   const [technicianName, setTechnicianName] = useState("");
+
+  // Evita recargar el formulario cuando la MISMA OT se actualiza en Firestore.
+  // Solo se recarga al cambiar de vehículo o de modo (diagnóstico/reparación).
+  // Sin esta guarda, cualquier actualización (por ejemplo, iniciar el cronómetro)
+  // borraba las notas, fotos, repuestos y la firma que el técnico aún no guardó.
+  const loadedRepairKey = React.useRef<string | null>(null);
   
   // TV & Workshop Wide Screen TV states
   const [isTvMode, setIsTvMode] = useState(false);
@@ -181,29 +187,37 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     }
   }, [techMode, repairs, selectedId, userName, userRole]);
 
-  // Sync state whenever active repair changes
+  // Sync state only when the selected vehicle or mode changes.
+  // IMPORTANTE: no depender del contenido de `activeRepair`, porque Firestore
+  // entrega un objeto nuevo en cada actualización y borraría los cambios locales.
   React.useEffect(() => {
-    if (activeRepair) {
-      setTechNotes(techMode === "reparacion" ? (activeRepair.workshopNotes || "") : (activeRepair.technicianNotes || ""));
-      setTechSignature(activeRepair.technicianSignature || "");
-      setTechnicianName(
-        (activeRepair.technicianName || "").replace(/^Téc\.\s*/i, "") ||
-        activeRepair.assignedTech ||
-        (userRole === "tecnico" ? userName : "") ||
-        ""
-      );
-      setSpareParts(activeRepair.spareParts || []);
-      setNewPartDesc("");
-      setNewPartType("reparacion");
-      setDiagPhotos(activeRepair.visualState.photos || []);
-      setDiagVideos([]);
-      setDiagWarranty(activeRepair.serviceType === "garantia");
-      setMesaPhotos(activeRepair.workshopPhotos || []);
-      setMesaVideos([]);
-      // Reset procedures check
-      setCompletedProcedures({});
+    if (!activeRepair) {
+      loadedRepairKey.current = null;
+      return;
     }
-  }, [selectedId, activeRepair, techMode]);
+    const loadKey = `${techMode}:${activeRepair.id}`;
+    if (loadedRepairKey.current === loadKey) return;
+    loadedRepairKey.current = loadKey;
+
+    setTechNotes(techMode === "reparacion" ? (activeRepair.workshopNotes || "") : (activeRepair.technicianNotes || ""));
+    setTechSignature(activeRepair.technicianSignature || "");
+    setTechnicianName(
+      (activeRepair.technicianName || "").replace(/^Téc\.\s*/i, "") ||
+      activeRepair.assignedTech ||
+      (userRole === "tecnico" ? userName : "") ||
+      ""
+    );
+    setSpareParts(activeRepair.spareParts || []);
+    setNewPartDesc("");
+    setNewPartType("reparacion");
+    setDiagPhotos(activeRepair.visualState.photos || []);
+    setDiagVideos([]);
+    setDiagWarranty(activeRepair.serviceType === "garantia");
+    setMesaPhotos(activeRepair.workshopPhotos || []);
+    setMesaVideos([]);
+    // Reset procedures check
+    setCompletedProcedures({});
+  }, [activeRepair, techMode]);
 
   // Registro de Actividad: todos los eventos del historial de las órdenes del técnico/sede
   const activityEvents = React.useMemo(() => {
@@ -316,14 +330,16 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       }
     }
 
-    // Cierre automático del cronómetro: al enviar a Control de Calidad, marcar
-    // listo, entregar o cancelar, el tiempo deja de correr. Así la producción
-    // no queda inflada si el técnico olvidó pausar.
+    // Cierre automático del cronómetro: al enviar a Presupuesto, Pago, Control
+    // de Calidad, marcar listo, entregar o cancelar, el tiempo deja de correr.
+    // Así la producción no queda inflada si el técnico olvidó pausar.
     const extraHistoryLogs: any[] = [...((extra?.extraHistoryLogs as any[]) || [])];
     let nextWorkLog = activeRepair.workLog;
-    if (isClosedStatus(newStatus)) {
+    if (shouldStopTimer(newStatus)) {
       const closedAt = new Date().toISOString();
       const closeLabel =
+        newStatus === "quoted" ? "Presupuesto y Pago" :
+        newStatus === "paid" ? "Pagado" :
         newStatus === "testing" ? "Control de Calidad" :
         newStatus === "ready" ? "Listo para Entrega" :
         newStatus === "delivered" ? "Entregado al Cliente" : "Cancelado";
@@ -354,13 +370,23 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       technicianSignature: techSignature,
       technicianSignatureName: `Téc. ${technicianName}`,
       ...(activeRepair.status === "diagnosing" && newStatus === "quoted" ? { diagnosisTech: technicianName.trim() } : {}),
+      // Evidencia de la mesa: se guarda junto con el cambio de estado para que
+      // no se pierda si el técnico no pulsó antes "Guardar Cambios".
+      ...(activeRepair.status === "repairing"
+        ? {
+            workshopPhotos: mesaPhotos,
+            workshopPhotosTaken: mesaPhotos.length > 0,
+            videoEvidenceBlobs: mesaVideos.filter((v) => !v.uploadedToCloud)
+          }
+        : {}),
       ...(extra || {}),
       ...(nextWorkLog !== activeRepair.workLog ? { workLog: nextWorkLog } : {}),
       ...(extraHistoryLogs.length ? { extraHistoryLogs } : {})
     };
 
     try {
-      await onUpdateRepair(activeRepair.id, payload);
+      const ok = await onUpdateRepair(activeRepair.id, payload);
+      if (ok !== false) setMesaVideos((prev) => prev.filter((v) => !v.uploadedToCloud));
     } catch (err) {
       console.error(err);
       alert("Error al actualizar estado.");
@@ -374,7 +400,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     computeNetWorkMs(rep.workLog, currentTime.getTime(), workClosedAt(rep));
 
   const isWorkRunning = (rep: RepairItem): boolean =>
-    !isClosedStatus(rep.status) && isWorkLogRunning(rep.workLog);
+    !shouldStopTimer(rep.status) && isWorkLogRunning(rep.workLog);
 
   const hasTimeRegistered = (rep: RepairItem): boolean => hasRegisteredWorkTime(rep.workLog);
 
@@ -432,11 +458,14 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       technicianSignatureName: `Téc. ${technicianName}`,
       workshopPhotos: mesaPhotos,
       workshopPhotosTaken: mesaPhotos.length > 0,
-      videoEvidenceBlobs: mesaVideos
+      videoEvidenceBlobs: mesaVideos.filter((v) => !v.uploadedToCloud)
     };
 
     try {
-      await onUpdateRepair(activeRepair.id, payload);
+      const ok = await onUpdateRepair(activeRepair.id, payload);
+      if (ok === false) return;
+      // Quita de la tablet solo los videos que sí llegaron a la nube.
+      setMesaVideos((prev) => prev.filter((v) => !v.uploadedToCloud));
       alert("Notas, presupuesto, fotos y firma guardados con éxito.");
     } catch (err) {
       console.error(err);
@@ -523,12 +552,14 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         photos: diagPhotos,
         photosTaken: diagPhotos.length > 0
       },
-      videoEvidenceBlobs: diagVideos
+      videoEvidenceBlobs: diagVideos.filter((v) => !v.uploadedToCloud)
     };
 
     try {
-      await onUpdateRepair(activeRepair.id, payload);
-      setDiagVideos([]);
+      const ok = await onUpdateRepair(activeRepair.id, payload);
+      if (ok === false) return;
+      // Conserva los videos que no se pudieron subir para reintentar.
+      setDiagVideos((prev) => prev.filter((v) => !v.uploadedToCloud));
       alert(isWarranty ? "Diagnóstico guardado. Por ser garantía, el vehículo pasó directo a su Mesa de Trabajo." : "Diagnóstico guardado. El vehículo pasó a Presupuesto y Pago.");
     } catch (err) {
       console.error(err);
@@ -1581,7 +1612,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         <span>Ficha de Recepción</span>
                       </h4>
                       <p className="mb-1 text-slate-300"><strong>Sede de Ingreso:</strong> {activeRepair.workshopBranch === "lince_arenales" ? "San Isidro" : activeRepair.workshopBranch === "surco" ? "Surco" : activeRepair.workshopBranch === "san_borja" ? "San Borja" : activeRepair.workshopBranch === "lince_leal" ? "Lince" : "Lince"}</p>
-                      <p className="mb-1 text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{STATUS_SHORT_LABELS[activeRepair.status] || activeRepair.status}</span></p>
+                      <p className="mb-1 text-slate-300"><strong>Tipo de Servicio:</strong> <span className="text-cyan-300 font-bold uppercase">{SERVICE_TYPE_META[activeRepair.serviceType || "diagnostico"]?.label || activeRepair.serviceType}</span></p>
                       <p className="mb-1 text-slate-300"><strong>Tipo de Vehículo:</strong> {activeRepair.vehicle.type.toUpperCase()}</p>
                       <p className="mb-1 text-slate-300"><strong>Voltaje:</strong> {activeRepair.vehicle.voltage}</p>
                       <p className="mb-1 text-slate-300"><strong>Tiempo de Uso de la Batería:</strong> {activeRepair.vehicle.batteryCondition.toUpperCase()}</p>

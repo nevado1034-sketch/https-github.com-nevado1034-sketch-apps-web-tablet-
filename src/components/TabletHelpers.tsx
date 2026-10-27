@@ -5,7 +5,13 @@ export interface RecordedVideo {
   blob: Blob;
   durationSec: number;
   sizeBytes: number;
+  uploadedToCloud?: boolean; // Lo marca App al subirlo con éxito a Firebase Storage
 }
+
+// Tamaño máximo de las fotos guardadas en la orden. Las fotos van en base64
+// dentro del documento de Firestore (límite 1 MiB), así que se reducen.
+const PHOTO_MAX_DIMENSION = 1280;
+const PHOTO_JPEG_QUALITY = 0.7;
 
 interface SignaturePadProps {
   onSave: (dataUrl: string) => void;
@@ -285,8 +291,11 @@ export function PhotoManager({
 
     try {
       const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
+      const sourceWidth = video.videoWidth || 640;
+      const sourceHeight = video.videoHeight || 480;
+      const scale = Math.min(1, PHOTO_MAX_DIMENSION / Math.max(sourceWidth, sourceHeight));
+      canvas.width = Math.round(sourceWidth * scale);
+      canvas.height = Math.round(sourceHeight * scale);
       const ctx = canvas.getContext("2d");
       if (ctx) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -298,7 +307,7 @@ export function PhotoManager({
         ctx.font = "bold 12px monospace";
         ctx.fillText(`LITIO ENERGY EV-TABLET  |  ${new Date().toLocaleDateString()}`, 15, canvas.height - 12);
 
-        const dataUrl = canvas.toDataURL("image/jpeg");
+        const dataUrl = canvas.toDataURL("image/jpeg", PHOTO_JPEG_QUALITY);
         onPhotosChange([...photos, dataUrl]);
         stopCamera();
       }

@@ -5,6 +5,7 @@ import {
   sameTechnician,
   matchesAssignedTechnician,
   isClosedStatus,
+  shouldStopTimer,
   assignmentInfo,
   workClosedAt,
   computeNetWorkMs,
@@ -223,8 +224,59 @@ describe("cronómetro: estado y cierre automático", () => {
   });
 });
 
+describe("shouldStopTimer", () => {
+  it("detiene el cronómetro también en presupuesto y pago", () => {
+    (["quoted", "paid", "testing", "ready", "delivered", "cancelled"] as RepairStatus[]).forEach((s) => {
+      expect(shouldStopTimer(s)).toBe(true);
+    });
+    (["receptioned", "diagnosing", "repairing"] as RepairStatus[]).forEach((s) => {
+      expect(shouldStopTimer(s)).toBe(false);
+    });
+  });
+});
+
 describe("workClosedAt", () => {
-  it("usa la primera marca del estado de cierre", () => {
+  it("corta el tiempo cuando la orden espera presupuesto", () => {
+    const repair = makeRepair({
+      status: "quoted",
+      workLog: wl([["inicio", "2026-10-21T10:00:00.000Z"]]),
+      historyLog: [
+        {
+          id: "1",
+          date: "2026-10-21T10:40:00.000Z",
+          status: "quoted",
+          description: "Estado cambiado a Presupuesto.",
+          user: "Téc. Ana"
+        }
+      ]
+    });
+    const closedAt = workClosedAt(repair);
+    expect(closedAt).toBe(new Date("2026-10-21T10:40:00.000Z").getTime());
+    const later = new Date("2026-10-21T22:00:00.000Z").getTime();
+    expect(computeNetWorkMs(repair.workLog, later, closedAt)).toBe(40 * 60 * 1000);
+  });
+
+  it("usa el último ingreso a Control de Calidad si hubo reproceso", () => {
+    const repair = makeRepair({
+      status: "testing",
+      workLog: wl([
+        ["inicio", "2026-10-21T10:00:00.000Z"],
+        ["pausa", "2026-10-21T11:00:00.000Z"],
+        ["reanudar", "2026-10-21T13:00:00.000Z"]
+      ]),
+      historyLog: [
+        { id: "1", date: "2026-10-21T11:00:00.000Z", status: "testing", description: "A pruebas", user: "Téc. Ana" },
+        { id: "2", date: "2026-10-21T12:00:00.000Z", status: "repairing", description: "Rechazado QC", user: "Asesora" },
+        { id: "3", date: "2026-10-21T13:30:00.000Z", status: "testing", description: "A pruebas", user: "Téc. Ana" }
+      ]
+    });
+    const closedAt = workClosedAt(repair);
+    expect(closedAt).toBe(new Date("2026-10-21T13:30:00.000Z").getTime());
+    const later = new Date("2026-10-21T20:00:00.000Z").getTime();
+    expect(computeNetWorkMs(repair.workLog, later, closedAt)).toBe(90 * 60 * 1000);
+  });
+
+  it("usa la marca del estado de cierre", () => {
     const repair = makeRepair({
       status: "testing",
       historyLog: [

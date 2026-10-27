@@ -23,7 +23,7 @@ import { AuthConfig, AuthSession, ROLE_TABS, loadConfig, loadSession, saveConfig
 import { onRepairCreated, onRepairUpdated, onRepairDeleted } from "./data";
 import { nextClientId, nextOrderId } from "./data/idGenerator";
 import { normalizeDocument, detectDocumentType, canUseAsCanonicalDocId } from "./data/documentValidator";
-import { closeRunningWorkLog, isClosedStatus } from "./data/technicianProduction";
+import { closeRunningWorkLog, shouldStopTimer } from "./data/technicianProduction";
 import { AlertCircle, RefreshCw } from "lucide-react";
 
 // Firestore rechaza valores `undefined`; elimina recursivamente esos campos
@@ -612,7 +612,10 @@ export default function App() {
   };
 
   // Put repair status/notes update (REST / Firestore)
-  const handleUpdateRepair = async (id: string, updateData: any) => {
+  // Devuelve `true` si la orden quedó guardada y `false` si hubo un error.
+  // Los llamadores que suben videos usan este resultado para no borrar de la
+  // tablet los archivos que no llegaron a la nube.
+  const handleUpdateRepair = async (id: string, updateData: any): Promise<any> => {
     setIsLoading(true);
     try {
       if (isFirebaseConfigured && db) {
@@ -674,13 +677,13 @@ export default function App() {
         }
         delete updateData.extraHistoryLogs;
 
-        // Cierre automático del cronómetro al cerrar la orden desde cualquier
-        // pantalla (Control de Calidad, entrega o cancelación). Si el técnico
-        // ya lo cerró manualmente desde su mesa, no se duplica la pausa.
+        // Cierre automático del cronómetro al salir de la mesa del técnico
+        // (presupuesto, pago, Control de Calidad, entrega o cancelación).
+        // Si el técnico ya lo cerró manualmente desde su mesa, no se duplica la pausa.
         if (
           newStatus &&
           newStatus !== oldStatus &&
-          isClosedStatus(newStatus) &&
+          shouldStopTimer(newStatus) &&
           !updateData.workLog
         ) {
           const closedAt = new Date().toISOString();
@@ -688,7 +691,7 @@ export default function App() {
             currentItem.workLog,
             closedAt,
             updateData.technicianName || session?.name || "Sistema Litio",
-            "Cierre automático al cerrar la orden"
+            "Cierre automático al salir de la mesa de trabajo"
           );
           if (closedWorkLog) {
             updateData.workLog = closedWorkLog;
@@ -696,7 +699,7 @@ export default function App() {
               id: `log_work_auto_close_${Date.now()}`,
               date: closedAt,
               status: newStatus,
-              description: "Cronómetro cerrado automáticamente al cerrar la orden.",
+              description: "Cronómetro cerrado automáticamente al salir de la mesa de trabajo.",
               user: updateData.technicianName || session?.name || "Sistema Litio"
             });
           }
@@ -730,6 +733,9 @@ export default function App() {
                   orderId: id,
                   branch: currentItem.workshopBranch || "lince_arenales"
                 });
+                // Marca el blob local como subido. El técnico conserva en su
+                // tablet solo los videos que fallaron, para poder reintentar.
+                v.uploadedToCloud = true;
               } catch (uploadErr) {
                 console.error("Error subiendo video del técnico:", uploadErr);
                 failedUploads++;
@@ -773,6 +779,7 @@ export default function App() {
 
         // Dual-write: sync update to ordenes collection
         onRepairUpdated(cleanUndefined(updatedItem) as RepairItem).catch((e) => console.error("Dual-write update error:", e));
+        return true;
       } else {
         delete updateData.videoEvidenceBlobs;
         delete updateData.extraHistoryLogs;
@@ -786,10 +793,12 @@ export default function App() {
           throw new Error("Error al actualizar la bitácora del vehículo.");
         }
         await fetchAllData(true);
+        return true;
       }
     } catch (err: any) {
       console.error(err);
       alert("Error al actualizar la orden en taller.");
+      return false;
     } finally {
       setIsLoading(false);
     }
