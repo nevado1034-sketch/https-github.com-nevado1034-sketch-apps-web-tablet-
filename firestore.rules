@@ -27,7 +27,7 @@ service cloud.firestore {
     // ══════════════════════════════════════════════════════════════════════
     // CLIENTES POR LOCAL (subcolección por sede): espejo privado de cada local
     // - READ/WRITE: solo el local autorizado
-    // - DELETE: permitido para limpieza de duplicados/test desde ese local
+    // - DELETE: BLOQUEADO - los datos de clientes solo se archivan, nunca se borran
     // ══════════════════════════════════════════════════════════════════════
     match /clientes/{localKey}/clientes/{clientId} {
       allow read: if isAllowedLocal(localKey);
