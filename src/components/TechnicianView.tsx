@@ -24,14 +24,11 @@ import {
   Calculator,
   ShieldCheck,
   ChevronDown,
-  ChevronRight,
-  Activity,
-  Inbox
+  ChevronRight
 } from "lucide-react";
 import { RepairItem, RepairStatus, HistoryLog, WorkLogEntry, WorkshopBranch, ServiceType, PaymentMethod, SparePart } from "../types";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
 import TechnicianProductionView from "./TechnicianProductionView";
-import { periodRange, PeriodKey, PERIOD_PRESETS, BRANCH_LABELS } from "../data/metrics";
 import {
   assignmentInfo,
   closeRunningWorkLog,
@@ -39,7 +36,6 @@ import {
   hasRegisteredWorkTime,
   isWorkLogRunning,
   matchesAssignedTechnician,
-  sameTechnician,
   shouldStopTimer,
   workClosedAt
 } from "../data/technicianProduction";
@@ -147,10 +143,9 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   const [workPauseTarget, setWorkPauseTarget] = useState<RepairItem | null>(null);
   const [workPauseReason, setWorkPauseReason] = useState("");
 
-  // Registro de Actividad (plegable al pie): vista cronológica de los envíos
-  // y eventos de las órdenes del técnico, filtrable por rango de fecha.
-  const [showActivityLog, setShowActivityLog] = useState(false);
-  const [activityRange, setActivityRange] = useState<PeriodKey>("7d");
+  // Historial de la OT abierta: por defecto solo los últimos eventos.
+  // El historial completo de todos los trabajos está en "Mis trabajos".
+  const [showFullHistory, setShowFullHistory] = useState(false);
 
   // Vista principal: mesa de trabajo (operativa) o "Mis trabajos" (solo lectura).
   // "Mis trabajos" está siempre disponible, incluso sin una OT activa.
@@ -217,63 +212,8 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     setMesaVideos([]);
     // Reset procedures check
     setCompletedProcedures({});
+    setShowFullHistory(false);
   }, [activeRepair, techMode]);
-
-  // Registro de Actividad: todos los eventos del historial de las órdenes del técnico/sede
-  const activityEvents = React.useMemo(() => {
-    const range = periodRange(activityRange);
-    const isTech = userRole === "tecnico";
-
-    const allowed = repairs.filter((r) => {
-      if (userRole === "jefa" || userRole === "admin" || !isTech) {
-        if (userLocalKey && r.workshopBranch !== userLocalKey) return false;
-        return true;
-      }
-      // Técnico: solo órdenes asignadas exactamente a él o donde su nombre
-      // aparece en el historial (comparación normalizada, sin subcadenas).
-      if (matchesAssignedTech(r.assignedTech, userName, userRole)) return true;
-      if ((r.historyLog || []).some((l) => sameTechnician(l.user, userName))) return true;
-      return false;
-    });
-
-    const events: Array<{
-      key: string;
-      repairId: string;
-      clientName: string;
-      vehicle: string;
-      branch: string;
-      date: number;
-      description: string;
-      user: string;
-      status?: string;
-    }> = [];
-
-    for (const r of allowed) {
-      const logs = r.historyLog || [];
-      for (const log of logs) {
-        if (!log.date) continue;
-        const t = new Date(log.date).getTime();
-        if (!isFinite(t)) continue;
-        if (activityRange !== "todo") {
-          if (t < range.from || t > range.to) continue;
-        }
-        events.push({
-          key: `${r.id}-${log.id}`,
-          repairId: r.id,
-          clientName: r.client?.name || "—",
-          vehicle: `${r.vehicle?.brand || ""} ${r.vehicle?.model || ""}`.trim() || "—",
-          branch: r.workshopBranch,
-          date: t,
-          description: log.description || "Evento de taller",
-          user: log.user || "—",
-          status: log.status
-        });
-      }
-    }
-
-    events.sort((a, b) => b.date - a.date);
-    return events;
-  }, [repairs, userRole, userName, userLocalKey, activityRange]);
 
   // Clock effect for TV Mode
   React.useEffect(() => {
@@ -2237,91 +2177,30 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                     )}
 
 
-                  {/* REGISTRO DE ACTIVIDAD - Accesible para el técnico */}
-                  <div className="bg-slate-900 rounded-2xl border border-cyan-500/25 shadow-lg overflow-hidden">
-                    <button
-                      type="button"
-                      onClick={() => setShowActivityLog(v => !v)}
-                      className="w-full flex items-center justify-between px-4 sm:px-5 py-2.5 hover:bg-cyan-500/5 transition-colors"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Activity className="w-4 h-4 text-cyan-400" />
-                        <span className="text-xs font-black uppercase tracking-wider text-cyan-300">Registro de Actividad</span>
-                        <span className="px-2 py-0.5 rounded-full bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400">
-                          {activityEvents.length}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-slate-400">
-                        <span className="text-[10px] uppercase tracking-wider hidden sm:inline">{showActivityLog ? "Ocultar" : "Ver registro"}</span>
-                        {showActivityLog ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                      </div>
-                    </button>
-
-                    {showActivityLog && (
-                      <div className="border-t border-cyan-500/20">
-                        <div className="flex flex-wrap items-center gap-1.5 px-4 sm:px-5 py-2 bg-slate-950/40">
-                          <span className="text-[9px] uppercase tracking-widest text-slate-500 mr-1">Rango</span>
-                          {PERIOD_PRESETS.map(p => (
-                            <button
-                              key={p.key}
-                              type="button"
-                              onClick={() => setActivityRange(p.key)}
-                              className={"px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wide border transition-all " + (activityRange === p.key ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40" : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700")}
-                            >
-                              {p.label}
-                            </button>
-                          ))}
-                          <button
-                            type="button"
-                            onClick={() => setActivityRange("todo")}
-                            className={"px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wide border transition-all " + (activityRange === "todo" ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40" : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700")}
-                          >
-                            Todo
-                          </button>
-                        </div>
-
-                        <div className="divide-y divide-slate-800/60 max-h-[340px] overflow-y-auto">
-                          {activityEvents.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center py-8 text-center">
-                              <Inbox className="w-7 h-7 text-slate-600 mb-2" />
-                              <p className="text-xs text-slate-400">Sin actividad en este rango</p>
-                              <p className="text-[10px] text-slate-600 mt-1">Aquí aparecerán envíos, derivaciones y cambios de estado</p>
-                            </div>
-                          ) : (
-                            activityEvents.map(ev => (
-                              <div key={ev.key} className="flex items-start gap-2 px-4 sm:px-5 py-2 hover:bg-slate-850/40 transition-colors">
-                                <div className="w-1 h-1 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(6,182,212,0.6)] shrink-0 mt-1.5"></div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex flex-wrap items-center justify-between gap-1.5">
-                                    <div className="flex items-center gap-1.5 flex-wrap">
-                                      <span className="font-mono text-[10px] font-bold text-cyan-400">{ev.repairId}</span>
-                                      <span className="text-slate-600">•</span>
-                                      <span className="text-[11px] font-semibold text-slate-200 truncate max-w-[190px]">{ev.clientName}</span>
-                                      <span className="text-[9px] text-slate-500">{ev.vehicle}</span>
-                                    </div>
-                                    <span className="text-[9px] text-slate-500 font-mono">
-                                      {new Date(ev.date).toLocaleDateString([], { day: '2-digit', month: '2-digit' })} {new Date(ev.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                    </span>
-                                  </div>
-                                  <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">{ev.description}</p>
-                                  <p className="text-[9px] text-slate-500">Operador: <strong className="text-slate-300">{ev.user}</strong></p>
-                                </div>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* 5. Historial y Línea de Tiempo (Logs) */}
+                  {/* 5. Historial de esta OT (compacto: últimos eventos) */}
+                  {(() => {
+                    const history = (activeRepair.historyLog || []).slice().reverse();
+                    const visibleHistory = showFullHistory ? history : history.slice(0, 5);
+                    return (
                   <div className="space-y-3">
-                    <span className="block text-xs font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-800 pb-2">
-                      Historial de Transiciones y Logs de Taller
-                    </span>
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                        Historial de esta orden
+                      </span>
+                      {history.length > 5 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowFullHistory(v => !v)}
+                          className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-cyan-400 hover:text-cyan-300 transition-colors"
+                        >
+                          <span>{showFullHistory ? "Ver menos" : `Ver todo (${history.length})`}</span>
+                          {showFullHistory ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                        </button>
+                      )}
+                    </div>
                     
                     <div className="space-y-3 pl-2">
-                      {activeRepair.historyLog?.slice().reverse().map((log: HistoryLog) => (
+                      {visibleHistory.map((log: HistoryLog) => (
                         <div key={log.id} className="flex items-start space-x-3 text-xs leading-relaxed">
                           <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.6)] shrink-0 mt-1.5 animate-pulse"></div>
                           <div className="flex-1">
@@ -2335,8 +2214,13 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                           </div>
                         </div>
                       ))}
+                      {history.length === 0 && (
+                        <p className="text-[11px] text-slate-500">Sin eventos registrados.</p>
+                      )}
                     </div>
                   </div>
+                    );
+                  })()}
 
                 </div>
               </div>
