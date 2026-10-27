@@ -23,6 +23,7 @@ import { AuthConfig, AuthSession, ROLE_TABS, loadConfig, loadSession, saveConfig
 import { onRepairCreated, onRepairUpdated, onRepairDeleted } from "./data";
 import { nextClientId, nextOrderId } from "./data/idGenerator";
 import { normalizeDocument, detectDocumentType, canUseAsCanonicalDocId } from "./data/documentValidator";
+import { closeRunningWorkLog, isClosedStatus } from "./data/technicianProduction";
 import { AlertCircle, RefreshCw } from "lucide-react";
 
 // Firestore rechaza valores `undefined`; elimina recursivamente esos campos
@@ -672,6 +673,34 @@ export default function App() {
           }
         }
         delete updateData.extraHistoryLogs;
+
+        // Cierre automático del cronómetro al cerrar la orden desde cualquier
+        // pantalla (Control de Calidad, entrega o cancelación). Si el técnico
+        // ya lo cerró manualmente desde su mesa, no se duplica la pausa.
+        if (
+          newStatus &&
+          newStatus !== oldStatus &&
+          isClosedStatus(newStatus) &&
+          !updateData.workLog
+        ) {
+          const closedAt = new Date().toISOString();
+          const closedWorkLog = closeRunningWorkLog(
+            currentItem.workLog,
+            closedAt,
+            updateData.technicianName || session?.name || "Sistema Litio",
+            "Cierre automático al cerrar la orden"
+          );
+          if (closedWorkLog) {
+            updateData.workLog = closedWorkLog;
+            logs.push({
+              id: `log_work_auto_close_${Date.now()}`,
+              date: closedAt,
+              status: newStatus,
+              description: "Cronómetro cerrado automáticamente al cerrar la orden.",
+              user: updateData.technicianName || session?.name || "Sistema Litio"
+            });
+          }
+        }
 
         // Subir videos de respaldo registrados por el técnico durante el diagnóstico
         const videoBlobs = updateData.videoEvidenceBlobs || [];

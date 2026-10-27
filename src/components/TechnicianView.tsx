@@ -30,7 +30,19 @@ import {
 } from "lucide-react";
 import { RepairItem, RepairStatus, HistoryLog, WorkLogEntry, WorkshopBranch, ServiceType, PaymentMethod, SparePart } from "../types";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
+import TechnicianProductionView from "./TechnicianProductionView";
 import { periodRange, PeriodKey, PERIOD_PRESETS, BRANCH_LABELS } from "../data/metrics";
+import {
+  assignmentInfo,
+  closeRunningWorkLog,
+  computeNetWorkMs,
+  hasRegisteredWorkTime,
+  isClosedStatus,
+  isWorkLogRunning,
+  matchesAssignedTechnician,
+  sameTechnician,
+  workClosedAt
+} from "../data/technicianProduction";
 import litioLogo from "../assets/litio-logo.png";
 
 interface TechnicianViewProps {
@@ -81,13 +93,9 @@ const SERVICE_TYPE_META: Record<string, { label: string; bg: string; text: strin
 // Sin técnico asignado = el vehículo está "En espera" (clientes en espera), no en diagnóstico.
 const hasAssignedTech = (r: { assignedTech?: string }) => !!(r.assignedTech || "").trim();
 
-const matchesAssignedTech = (assignedTech: string | undefined, userName: string | undefined, userRole: string | undefined) => {
-  if (userRole !== "tecnico") return true;
-  const me = (userName || "").trim().toLowerCase();
-  if (!me) return false;
-  const theirs = (assignedTech || "").trim().toLowerCase();
-  return theirs === me || theirs.includes(me) || me.includes(theirs);
-};
+// Comparación EXACTA y normalizada: evita que "Ana" vea el trabajo de "Susana".
+const matchesAssignedTech = (assignedTech: string | undefined, userName: string | undefined, userRole: string | undefined) =>
+  matchesAssignedTechnician(assignedTech, userName, userRole);
 
 export default function TechnicianView({ repairs, onUpdateRepair, isLoading, userLocalKey, userName, userRole, initialMode }: TechnicianViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(repairs[0]?.id || null);
@@ -137,6 +145,10 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   // y eventos de las órdenes del técnico, filtrable por rango de fecha.
   const [showActivityLog, setShowActivityLog] = useState(false);
   const [activityRange, setActivityRange] = useState<PeriodKey>("7d");
+
+  // Vista principal: mesa de trabajo (operativa) o "Mis trabajos" (solo lectura).
+  // "Mis trabajos" está siempre disponible, incluso sin una OT activa.
+  const [viewMode, setViewMode] = useState<"mesa" | "produccion">("mesa");
 
   const activeRepair = repairs.find(r => r.id === selectedId);
 
@@ -197,24 +209,16 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   const activityEvents = React.useMemo(() => {
     const range = periodRange(activityRange);
     const isTech = userRole === "tecnico";
-    const me = (userName || "").trim().toLowerCase();
-    const meNoTec = me.replace(/^téc\.?\s*/i, "").trim();
 
     const allowed = repairs.filter((r) => {
       if (userRole === "jefa" || userRole === "admin" || !isTech) {
         if (userLocalKey && r.workshopBranch !== userLocalKey) return false;
         return true;
       }
-      // Técnico: solo órdenes asignadas a él o relacionadas con él
-      const at = (r.assignedTech || "").toLowerCase();
-      if (hasAssignedTech(r)) {
-        if (at === me || at === meNoTec || at.includes(meNoTec) || meNoTec.includes(at)) return true;
-      }
-      // También incluye órdenes donde el técnico aparece en su propio historial
-      if (meNoTec && (r.historyLog || []).some((l) => {
-        const u = (l.user || "").toLowerCase().replace(/^téc\.?\s*/i, "").trim();
-        return u === meNoTec || u.includes(meNoTec) || meNoTec.includes(u);
-      })) return true;
+      // Técnico: solo órdenes asignadas exactamente a él o donde su nombre
+      // aparece en el historial (comparación normalizada, sin subcadenas).
+      if (matchesAssignedTech(r.assignedTech, userName, userRole)) return true;
+      if ((r.historyLog || []).some((l) => sameTechnician(l.user, userName))) return true;
       return false;
     });
 
@@ -312,6 +316,35 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       }
     }
 
+    // Cierre automático del cronómetro: al enviar a Control de Calidad, marcar
+    // listo, entregar o cancelar, el tiempo deja de correr. Así la producción
+    // no queda inflada si el técnico olvidó pausar.
+    const extraHistoryLogs: any[] = [...((extra?.extraHistoryLogs as any[]) || [])];
+    let nextWorkLog = activeRepair.workLog;
+    if (isClosedStatus(newStatus)) {
+      const closedAt = new Date().toISOString();
+      const closeLabel =
+        newStatus === "testing" ? "Control de Calidad" :
+        newStatus === "ready" ? "Listo para Entrega" :
+        newStatus === "delivered" ? "Entregado al Cliente" : "Cancelado";
+      const closedLog = closeRunningWorkLog(
+        activeRepair.workLog,
+        closedAt,
+        `Téc. ${technicianName}`.trim(),
+        `Cierre automático al pasar a ${closeLabel}`
+      );
+      if (closedLog) {
+        nextWorkLog = closedLog;
+        extraHistoryLogs.push({
+          id: `log_work_close_${Date.now()}`,
+          date: closedAt,
+          status: newStatus,
+          description: `Cronómetro cerrado automáticamente al pasar a ${closeLabel}.`,
+          user: `Téc. ${technicianName}`.trim() || userName || "Técnico"
+        });
+      }
+    }
+
     const payload = {
       status: newStatus,
       technicianNotes: activeRepair.technicianNotes,
@@ -321,7 +354,9 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       technicianSignature: techSignature,
       technicianSignatureName: `Téc. ${technicianName}`,
       ...(activeRepair.status === "diagnosing" && newStatus === "quoted" ? { diagnosisTech: technicianName.trim() } : {}),
-      ...(extra || {})
+      ...(extra || {}),
+      ...(nextWorkLog !== activeRepair.workLog ? { workLog: nextWorkLog } : {}),
+      ...(extraHistoryLogs.length ? { extraHistoryLogs } : {})
     };
 
     try {
@@ -332,34 +367,16 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     }
   };
 
-  // Cronómetro manual del técnico: calcula el tiempo NETO (pausas excluidas)
-  const computeNetMs = (rep: RepairItem): number => {
-    const now = currentTime.getTime();
-    const wl = rep.workLog || [];
-    if (!wl.length) return 0;
-    let runningFrom: number | null = null;
-    let total = 0;
-    for (const entry of wl) {
-      const t = new Date(entry.at).getTime();
-      if (entry.action === "inicio" || entry.action === "reanudar") {
-        runningFrom = t;
-      } else if (entry.action === "pausa" && runningFrom !== null) {
-        total += t - runningFrom;
-        runningFrom = null;
-      }
-    }
-    if (runningFrom !== null) total += now - runningFrom;
-    return Math.max(0, total);
-  };
+  // Cronómetro manual del técnico: tiempo NETO (pausas excluidas).
+  // Si la orden ya salió de la mesa, el cálculo se corta en esa fecha para
+  // que un cronómetro olvidado no infle la producción.
+  const computeNetMs = (rep: RepairItem): number =>
+    computeNetWorkMs(rep.workLog, currentTime.getTime(), workClosedAt(rep));
 
-  const isWorkRunning = (rep: RepairItem): boolean => {
-    const wl = rep.workLog || [];
-    if (!wl.length) return false;
-    const last = wl[wl.length - 1];
-    return last.action === "inicio" || last.action === "reanudar";
-  };
+  const isWorkRunning = (rep: RepairItem): boolean =>
+    !isClosedStatus(rep.status) && isWorkLogRunning(rep.workLog);
 
-  const hasWorkLog = (rep: RepairItem): boolean => !!(rep.workLog && rep.workLog.length > 0);
+  const hasTimeRegistered = (rep: RepairItem): boolean => hasRegisteredWorkTime(rep.workLog);
 
   const formatNetTime = (ms: number): string => {
     const totalSec = Math.floor(ms / 1000);
@@ -655,6 +672,34 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         </div>
       </div>
 
+      {/* SELECTOR DE VISTA: MESA DE TRABAJO / MIS TRABAJOS (SOLO LECTURA) */}
+      <div className="mb-6 grid grid-cols-2 gap-2 bg-slate-900 border border-slate-800 p-1.5 rounded-2xl">
+        <button
+          type="button"
+          onClick={() => setViewMode("mesa")}
+          className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider border transition-all ${
+            viewMode === "mesa"
+              ? "bg-cyan-500 text-slate-950 border-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.25)]"
+              : "bg-slate-950 text-slate-400 border-slate-800 hover:text-cyan-300 hover:border-cyan-500/40"
+          }`}
+        >
+          <Wrench className="w-4 h-4" />
+          <span>Mesa de Trabajo</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode("produccion")}
+          className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider border transition-all ${
+            viewMode === "produccion"
+              ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.25)]"
+              : "bg-slate-950 text-slate-400 border-slate-800 hover:text-emerald-300 hover:border-emerald-500/40"
+          }`}
+        >
+          <ClipboardCheck className="w-4 h-4" />
+          <span>{userRole === "tecnico" ? "Mis trabajos" : "Producción"}</span>
+        </button>
+      </div>
+
       {/* SELECTOR DE MODO: DIAGNSTICO (VEHCULOS QUE ACABAN DE INGRESAR) / REPARACIN (TALLER COMPLETO) */}
       {!initialMode && (
       <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -700,6 +745,16 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
       </div>
       )}
 
+      {/* RENDER CONDICIONAL: 0. MIS TRABAJOS (SOLO LECTURA) */}
+      {viewMode === "produccion" ? (
+        <TechnicianProductionView
+          repairs={repairs}
+          userName={userName}
+          userRole={userRole}
+          userLocalKey={userLocalKey}
+        />
+      ) : (
+      <>
       {/* RENDER CONDICIONAL: 1. MODO TV (PANTALLA DE TELEVISOR DE TALLER) */}
       {isTvMode ? (
         <div className="space-y-6 animate-fade-in">
@@ -920,6 +975,18 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                     <p className="text-xs text-slate-400">
                       Cliente: <strong className="text-slate-200">{activeRepair.client.name}</strong>
                     </p>
+                    {(() => {
+                      const info = assignmentInfo(activeRepair);
+                      if (info.at === null && info.by === "—") return null;
+                      return (
+                        <p className="text-[11px] text-slate-500">
+                          Asignado por: <strong className="text-slate-300">{info.by}</strong>
+                          {info.at !== null && (
+                            <> · Enviado {new Date(info.at).toLocaleDateString([], { day: "2-digit", month: "2-digit" })} {new Date(info.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>
+                          )}
+                        </p>
+                      );
+                    })()}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-4 md:items-end">
@@ -937,8 +1004,10 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                     <div className="flex flex-col items-start md:items-end gap-1.5 bg-slate-900/80 border border-slate-800 rounded-xl px-3 py-2">
                       <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Cronómetro · Tiempo Neto</span>
                       <div className="flex items-center gap-2">
-                        <span className={`font-mono font-black text-lg ${isWorkRunning(activeRepair) ? "text-emerald-400" : "text-slate-200"}`}>
-                          {formatNetTime(computeNetMs(activeRepair))}
+                        <span className={hasTimeRegistered(activeRepair)
+                          ? `font-mono font-black text-lg ${isWorkRunning(activeRepair) ? "text-emerald-400" : "text-slate-200"}`
+                          : "text-[11px] font-bold text-amber-400"}>
+                          {hasTimeRegistered(activeRepair) ? formatNetTime(computeNetMs(activeRepair)) : "Sin tiempo registrado"}
                         </span>
                         {isWorkRunning(activeRepair) ? (
                           <button
@@ -952,11 +1021,11 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleWorkAction(hasWorkLog(activeRepair) ? "reanudar" : "inicio")}
+                            onClick={() => handleWorkAction(hasTimeRegistered(activeRepair) ? "reanudar" : "inicio")}
                             className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-500 text-slate-950 rounded-lg text-xs font-black uppercase tracking-wider hover:bg-emerald-400 transition-colors"
                           >
                             <Play className="w-3.5 h-3.5" />
-                            <span>{hasWorkLog(activeRepair) ? "Reanudar" : "Iniciar"}</span>
+                            <span>{hasTimeRegistered(activeRepair) ? "Reanudar" : "Iniciar"}</span>
                           </button>
                         )}
                       </div>
@@ -1361,6 +1430,11 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                                            Servicio aprobado
                                         </span>
                                       )}
+                                      {rep.assignedByName && (
+                                        <span className="text-[9px] bg-slate-950 text-slate-400 px-1.5 py-0.2 rounded font-mono font-bold">
+                                          por {rep.assignedByName}
+                                        </span>
+                                      )}
                                     </div>
                                   </div>
                                   <div className="text-right flex flex-col items-end justify-between self-stretch">
@@ -1408,6 +1482,18 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                     <p className="text-xs text-slate-400">
                       Cliente: <strong className="text-slate-200">{activeRepair.client.name}</strong>
                     </p>
+                    {(() => {
+                      const info = assignmentInfo(activeRepair);
+                      if (info.at === null && info.by === "—") return null;
+                      return (
+                        <p className="text-[11px] text-slate-500">
+                          Asignado por: <strong className="text-slate-300">{info.by}</strong>
+                          {info.at !== null && (
+                            <> · Enviado {new Date(info.at).toLocaleDateString([], { day: "2-digit", month: "2-digit" })} {new Date(info.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>
+                          )}
+                        </p>
+                      );
+                    })()}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-4 md:items-end">
@@ -1440,8 +1526,10 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                     <div className="flex flex-col items-start md:items-end gap-1.5 bg-slate-900/80 border border-slate-800 rounded-xl px-3 py-2">
                       <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Cronómetro · Tiempo Neto</span>
                       <div className="flex items-center gap-2">
-                        <span className={`font-mono font-black text-lg ${isWorkRunning(activeRepair) ? "text-emerald-400" : "text-slate-200"}`}>
-                          {formatNetTime(computeNetMs(activeRepair))}
+                        <span className={hasTimeRegistered(activeRepair)
+                          ? `font-mono font-black text-lg ${isWorkRunning(activeRepair) ? "text-emerald-400" : "text-slate-200"}`
+                          : "text-[11px] font-bold text-amber-400"}>
+                          {hasTimeRegistered(activeRepair) ? formatNetTime(computeNetMs(activeRepair)) : "Sin tiempo registrado"}
                         </span>
                         {isWorkRunning(activeRepair) ? (
                           <button
@@ -1455,11 +1543,11 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleWorkAction(hasWorkLog(activeRepair) ? "reanudar" : "inicio")}
+                            onClick={() => handleWorkAction(hasTimeRegistered(activeRepair) ? "reanudar" : "inicio")}
                             className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-500 text-slate-950 rounded-lg text-xs font-black uppercase tracking-wider hover:bg-emerald-400 transition-colors"
                           >
                             <Play className="w-3.5 h-3.5" />
-                            <span>{hasWorkLog(activeRepair) ? "Reanudar" : "Iniciar"}</span>
+                            <span>{hasTimeRegistered(activeRepair) ? "Reanudar" : "Iniciar"}</span>
                           </button>
                         )}
                       </div>
@@ -2235,6 +2323,8 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
           </div>
 
         </div>
+      )}
+      </>
       )}
 
 
