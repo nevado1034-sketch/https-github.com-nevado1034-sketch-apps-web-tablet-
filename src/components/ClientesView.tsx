@@ -351,10 +351,17 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey, se
         <div className="space-y-4">
           {visibleGroups.map((g) => (
             <div key={g.key} className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl overflow-hidden">
-              <button
-                type="button"
+              <div
+                role="button"
+                tabIndex={0}
                 onClick={() => setExpandedKey(expandedKey === g.key ? null : g.key)}
-                className="w-full flex items-center justify-between gap-4 p-4 text-left hover:bg-slate-900/80 transition-colors"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setExpandedKey(expandedKey === g.key ? null : g.key);
+                  }
+                }}
+                className="w-full flex items-center justify-between gap-4 p-4 text-left hover:bg-slate-900/80 transition-colors cursor-pointer"
               >
                 <div className="flex items-center space-x-3 min-w-0">
                   <div className="w-10 h-10 shrink-0 bg-cyan-500/10 border border-cyan-500/25 rounded-xl flex items-center justify-center">
@@ -388,7 +395,7 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey, se
                   )}
                   <ChevronRight className={`w-4 h-4 text-slate-500 transition-transform ${expandedKey === g.key ? "rotate-90" : ""}`} />
                 </div>
-              </button>
+              </div>
 
               {expandedKey === g.key && (
                 <div className="border-t border-slate-800">

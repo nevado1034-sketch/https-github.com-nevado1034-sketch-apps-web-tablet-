@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Timer, Users, ChevronLeft, ArrowUpRight } from "lucide-react";
 import { RepairItem } from "../types";
 import TimeMetricsView from "./TimeMetricsView";
-import ClientesView from "./ClientesView";
+import ClientHistoryView from "./ClientHistoryView";
 
 interface ProcessToolsViewProps {
   repairs: RepairItem[];
@@ -59,7 +59,7 @@ export default function ProcessToolsView({
             Volver a Tiempos por Proceso
           </button>
         </div>
-        <ClientesView repairs={repairs} onUpdateRepair={onUpdateRepair} userLocalKey={userLocalKey} searchRequired />
+        <ClientHistoryView repairs={repairs} onUpdateRepair={onUpdateRepair} userLocalKey={userLocalKey} />
       </div>
     );
   }
@@ -113,7 +113,7 @@ export default function ProcessToolsView({
             Historial de Clientes
           </p>
           <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-            Busca un cliente, revisa todas sus órdenes y ficha, y entrega desde su historial.
+            Servicios de tu sede por estado (en curso, en pausa, esperando), con su tiempo. Busca un cliente por nombre, celular o documento.
           </p>
         </button>
       </div>
