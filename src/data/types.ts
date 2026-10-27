@@ -65,10 +65,10 @@ export interface Activo {
 }
 
 /* ─────────────────────────────────────────────────
- *  ORDEN DE TRABAJO  ({BRANCH}-XXXXX)
+ *  ORDEN DE TRABAJO  ({BRANCH}-XXXXXX)
  * ───────────────────────────────────────────────── */
 export interface Orden {
-  id: string;               // LSI-00001, LSB-00003, etc.
+  id: string;               // SI-000001, SB-000003, etc.
   clientId: string;         // CLI-XXXXXX
   assetId: string;          // SCO-000847, etc.
   sede: WorkshopBranch;
@@ -190,6 +190,12 @@ export interface Orden {
     status: RepairStatus;
     description: string;
     user: string;
+  }>;
+  workLog?: Array<{
+    action: "inicio" | "pausa" | "reanudar";
+    at: string;
+    user?: string;
+    reason?: string;
   }>;
   source?: string;
   repairPhotos?: string[];

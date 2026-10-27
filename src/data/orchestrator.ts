@@ -10,7 +10,7 @@ import type { RepairItem } from "../types";
  * When a repair is created/updated in `repairs`, this also writes to:
  *   - `clientes/{id}`  — normalized client entity (CLI-XXXXXX)
  *   - `activos/{id}`   — normalized asset entity (SCO-XXXXXX, etc.)
- *   - `ordenes/{id}`   — normalized order entity (LSI-XXXXX, etc.)
+ *   - `ordenes/{id}`   — normalized order entity (SI-XXXXXX, etc.)
  *
  * The existing `repairs` collection remains the source of truth for all views.
  * These new collections are written in parallel for future migration.
@@ -83,6 +83,7 @@ export async function onRepairUpdated(repair: RepairItem): Promise<void> {
       clientEntryResponseAt: repair.clientEntryResponseAt,
       deliveredAt: repair.deliveredAt,
       historyLog: repair.historyLog as any,
+      workLog: repair.workLog?.length ? repair.workLog : [],
       repairPhotos: repair.repairPhotos,
       clientSignature: repair.clientSignature,
       clientSignatureName: repair.clientSignatureName,

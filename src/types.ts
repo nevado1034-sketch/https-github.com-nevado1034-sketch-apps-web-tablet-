@@ -11,13 +11,15 @@ export type RepairStatus =
   | 'repairing' 
   | 'testing' 
   | 'ready' 
-  | 'delivered';
+  | 'delivered'
+  | 'cancelled';
 
 export interface ClientInfo {
   name: string;
   phone: string;
   email: string;
   dni: string; // Will hold DNI or C.E
+  internalId?: string; // Código visible CLI-XXXXXX del cliente canónico
 }
 
 export interface VehicleInfo {
@@ -84,6 +86,8 @@ export interface HistoryLog {
   status: RepairStatus;
   description: string;
   user: string;
+  category?: string;
+  details?: string;
 }
 
 // Repuesto / trabajo que el técnico detecta durante el diagnóstico
@@ -144,6 +148,16 @@ export interface RepairItem {
   clientEntryResponseAt?: string; // Fecha/hora en que el cliente respondió al ingreso
   scheduledDeadline?: string; // Fecha/hora límite programada por la asesora de servicio
   serviceStartedAt?: string; // Fecha/hora en que inició el servicio
+  workLog?: WorkLogEntry[]; // Crono manual del técnico: inicio / pausa / reanudar
+}
+
+// Ítem del cronómetro manual de trabajo del técnico. No altera la métrica
+// automática por historyLog; registra el tiempo real de trabajo en paralelo.
+export interface WorkLogEntry {
+  action: "inicio" | "pausa" | "reanudar";
+  at: string; // ISO timestamp
+  user?: string; // Técnico que registró la acción
+  reason?: string; // Motivo de la pausa (ej. esperando repuesto)
 }
 
 // Ítem binario del checklist de calidad: en buen estado / para cambio

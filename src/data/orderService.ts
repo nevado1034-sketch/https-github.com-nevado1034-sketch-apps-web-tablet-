@@ -8,7 +8,7 @@ import { RepairItem, WorkshopBranch, VehicleType } from "../types";
  * Order Service — normalized work order entity.
  *
  * Collection: ordenes/{orderId}
- * ID format: LSI-00001, LSB-00003, LS-00012, LL-00005
+ * ID format: SI-000001, SB-000003, SU-000012, LI-000005
  *
  * This service writes to BOTH `repairs` (existing) and `ordenes` (new).
  * Reading still comes from `repairs` for now — `ordenes` is for future migration.

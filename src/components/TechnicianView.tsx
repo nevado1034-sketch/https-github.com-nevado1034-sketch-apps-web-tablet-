@@ -1,4 +1,4 @@
-﻿import React, { useState } from "react";
+import React, { useState } from "react";
 import { 
   Wrench, 
   User, 
@@ -18,10 +18,19 @@ import {
   Package,
   Stethoscope,
   Trash2,
-  ClipboardCheck
+  ClipboardCheck,
+  Play,
+  Pause,
+  Calculator,
+  ShieldCheck,
+  ChevronDown,
+  ChevronRight,
+  Activity,
+  Inbox
 } from "lucide-react";
-import { RepairItem, RepairStatus, HistoryLog, WorkshopBranch, ServiceType, PaymentMethod, SparePart } from "../types";
+import { RepairItem, RepairStatus, HistoryLog, WorkLogEntry, WorkshopBranch, ServiceType, PaymentMethod, SparePart } from "../types";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
+import { periodRange, PeriodKey, PERIOD_PRESETS, BRANCH_LABELS } from "../data/metrics";
 import litioLogo from "../assets/litio-logo.png";
 
 interface TechnicianViewProps {
@@ -57,6 +66,15 @@ const STATUS_COLUMNS: Array<{ id: RepairStatus; label: string; bg: string; text:
   { id: "testing", label: "Control de Calidad", bg: "bg-purple-950/20", text: "text-purple-400", border: "border-purple-900/40" },
   { id: "ready", label: "Listo para Entrega", bg: "bg-emerald-950/20", text: "text-emerald-400", border: "border-emerald-900/40" }
 ];
+
+// Motivo de ingreso del vehículo (resaltado en Mesa de Trabajo)
+const SERVICE_TYPE_META: Record<string, { label: string; bg: string; text: string; border: string }> = {
+  mantenimiento: { label: "Mantenimiento", bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-emerald-500/30" },
+  diagnostico: { label: "Diagnóstico", bg: "bg-cyan-500/15", text: "text-cyan-400", border: "border-cyan-500/30" },
+  garantia: { label: "Garantía", bg: "bg-violet-500/15", text: "text-violet-400", border: "border-violet-500/30" },
+  cambio: { label: "Cambio / Repuesto", bg: "bg-amber-500/15", text: "text-amber-400", border: "border-amber-500/30" },
+  express: { label: "Servicio Express", bg: "bg-rose-500/15", text: "text-rose-400", border: "border-rose-500/30" }
+};
 
 // El técnico en modo Diagnóstico/Reparación solo ve las órdenes que la asesora
 // le derivó ("mesa de trabajo"). Jefa y admin conservan la vista completa.
@@ -95,8 +113,8 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   const [newPartDesc, setNewPartDesc] = useState("");
   const [newPartType, setNewPartType] = useState<"reparacion" | "cambio" | "mantenimiento">("reparacion");
 
-  // Modo de trabajo del técnico: Diagnóstico (recién ingresados) o Reparación (taller completo)
-  const [techMode, setTechMode] = useState<"diagnostico" | "reparacion">(initialMode || "diagnostico");
+  // Modo de trabajo del técnico: solo Mesa de Trabajo (Reparación)
+  const [techMode, setTechMode] = useState<"diagnostico" | "reparacion">(initialMode || "reparacion");
 
   // Fotos y videos tomados durante el diagnóstico técnico
   const [diagPhotos, setDiagPhotos] = useState<string[]>([]);
@@ -110,6 +128,15 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   const [mesaPhotos, setMesaPhotos] = useState<string[]>([]);
   const [mesaVideos, setMesaVideos] = useState<RecordedVideo[]>([]);
   const [mesaPreviewUrl, setMesaPreviewUrl] = useState<string | null>(null); // URL temporal de blob para reproducir videos de mesa pendientes
+
+  // Cronómetro manual del técnico: inicio / pausa (con motivo) / reanudar
+  const [workPauseTarget, setWorkPauseTarget] = useState<RepairItem | null>(null);
+  const [workPauseReason, setWorkPauseReason] = useState("");
+
+  // Registro de Actividad (plegable al pie): vista cronológica de los envíos
+  // y eventos de las órdenes del técnico, filtrable por rango de fecha.
+  const [showActivityLog, setShowActivityLog] = useState(false);
+  const [activityRange, setActivityRange] = useState<PeriodKey>("7d");
 
   const activeRepair = repairs.find(r => r.id === selectedId);
 
@@ -166,6 +193,70 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     }
   }, [selectedId, activeRepair, techMode]);
 
+  // Registro de Actividad: todos los eventos del historial de las órdenes del técnico/sede
+  const activityEvents = React.useMemo(() => {
+    const range = periodRange(activityRange);
+    const isTech = userRole === "tecnico";
+    const me = (userName || "").trim().toLowerCase();
+    const meNoTec = me.replace(/^téc\.?\s*/i, "").trim();
+
+    const allowed = repairs.filter((r) => {
+      if (userRole === "jefa" || userRole === "admin" || !isTech) {
+        if (userLocalKey && r.workshopBranch !== userLocalKey) return false;
+        return true;
+      }
+      // Técnico: solo órdenes asignadas a él o relacionadas con él
+      const at = (r.assignedTech || "").toLowerCase();
+      if (hasAssignedTech(r)) {
+        if (at === me || at === meNoTec || at.includes(meNoTec) || meNoTec.includes(at)) return true;
+      }
+      // También incluye órdenes donde el técnico aparece en su propio historial
+      if (meNoTec && (r.historyLog || []).some((l) => {
+        const u = (l.user || "").toLowerCase().replace(/^téc\.?\s*/i, "").trim();
+        return u === meNoTec || u.includes(meNoTec) || meNoTec.includes(u);
+      })) return true;
+      return false;
+    });
+
+    const events: Array<{
+      key: string;
+      repairId: string;
+      clientName: string;
+      vehicle: string;
+      branch: string;
+      date: number;
+      description: string;
+      user: string;
+      status?: string;
+    }> = [];
+
+    for (const r of allowed) {
+      const logs = r.historyLog || [];
+      for (const log of logs) {
+        if (!log.date) continue;
+        const t = new Date(log.date).getTime();
+        if (!isFinite(t)) continue;
+        if (activityRange !== "todo") {
+          if (t < range.from || t > range.to) continue;
+        }
+        events.push({
+          key: `${r.id}-${log.id}`,
+          repairId: r.id,
+          clientName: r.client?.name || "—",
+          vehicle: `${r.vehicle?.brand || ""} ${r.vehicle?.model || ""}`.trim() || "—",
+          branch: r.workshopBranch,
+          date: t,
+          description: log.description || "Evento de taller",
+          user: log.user || "—",
+          status: log.status
+        });
+      }
+    }
+
+    events.sort((a, b) => b.date - a.date);
+    return events;
+  }, [repairs, userRole, userName, userLocalKey, activityRange]);
+
   // Clock effect for TV Mode
   React.useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -182,16 +273,18 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
   const handleUpdateStatus = async (newStatus: RepairStatus, extra?: Record<string, any>) => {
     if (!activeRepair) return;
 
-    const statusFlow: Record<string, string> = {
+    const statusFlow: Record<string, string | string[]> = {
       receptioned: "diagnosing",
       diagnosing: "quoted",
       quoted: "paid",
       paid: "repairing",
-      repairing: "testing",
+      repairing: ["quoted", "testing"],
       testing: "ready",
       ready: "delivered"
     };
-    if (statusFlow[activeRepair.status] !== newStatus) {
+    const allowedNext = statusFlow[activeRepair.status];
+    const isAllowed = Array.isArray(allowedNext) ? allowedNext.includes(newStatus) : allowedNext === newStatus;
+    if (!isAllowed) {
       alert(`No se puede saltar de "${activeRepair.status}" a "${newStatus}". Se debe seguir el orden: Diagnóstico → Presupuesto → Pago → Mesa de Trabajo → Control de Calidad.`);
       return;
     }
@@ -239,12 +332,84 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
     }
   };
 
+  // Cronómetro manual del técnico: calcula el tiempo NETO (pausas excluidas)
+  const computeNetMs = (rep: RepairItem): number => {
+    const now = currentTime.getTime();
+    const wl = rep.workLog || [];
+    if (!wl.length) return 0;
+    let runningFrom: number | null = null;
+    let total = 0;
+    for (const entry of wl) {
+      const t = new Date(entry.at).getTime();
+      if (entry.action === "inicio" || entry.action === "reanudar") {
+        runningFrom = t;
+      } else if (entry.action === "pausa" && runningFrom !== null) {
+        total += t - runningFrom;
+        runningFrom = null;
+      }
+    }
+    if (runningFrom !== null) total += now - runningFrom;
+    return Math.max(0, total);
+  };
+
+  const isWorkRunning = (rep: RepairItem): boolean => {
+    const wl = rep.workLog || [];
+    if (!wl.length) return false;
+    const last = wl[wl.length - 1];
+    return last.action === "inicio" || last.action === "reanudar";
+  };
+
+  const hasWorkLog = (rep: RepairItem): boolean => !!(rep.workLog && rep.workLog.length > 0);
+
+  const formatNetTime = (ms: number): string => {
+    const totalSec = Math.floor(ms / 1000);
+    const hh = String(Math.floor(totalSec / 3600)).padStart(2, "0");
+    const mm = String(Math.floor((totalSec % 3600) / 60)).padStart(2, "0");
+    const ss = String(totalSec % 60).padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  };
+
+  const handleWorkAction = async (action: "inicio" | "pausa" | "reanudar", reason?: string) => {
+    if (!activeRepair) return;
+    const entry: WorkLogEntry = {
+      action,
+      at: new Date().toISOString(),
+      user: technicianName.trim() || userName || "Técnico",
+      reason: reason || undefined
+    };
+    const workLog = [...(activeRepair.workLog || []), entry];
+
+    let description: string;
+    if (action === "inicio") description = "Inicio de trabajo (cronómetro manual).";
+    else if (action === "pausa") description = reason ? `Pausa de trabajo: ${reason}.` : "Pausa de trabajo.";
+    else description = "Reanudación de trabajo (cronómetro manual).";
+
+    try {
+      await onUpdateRepair(activeRepair.id, {
+        workLog,
+        extraHistoryLogs: [{
+          id: `log_work_${Date.now()}`,
+          date: entry.at,
+          status: activeRepair.status,
+          description,
+          user: entry.user || "Técnico"
+        }]
+      });
+      setWorkPauseReason("");
+      setWorkPauseTarget(null);
+    } catch (err) {
+      console.error(err);
+      alert("Error al actualizar el cronómetro de trabajo.");
+    }
+  };
+
   const handleSaveNotes = async () => {
     if (!activeRepair) return;
     
     const payload = {
       workshopNotes: techNotes,
       actualCost: activeRepair.actualCost || 0,
+      spareParts: spareParts.filter((p) => p.description.trim()),
       technicianName: `Téc. ${technicianName}`,
       technicianSignature: techSignature,
       technicianSignatureName: `Téc. ${technicianName}`,
@@ -767,6 +932,35 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         </span>
                       </div>
                     </div>
+
+                    {/* Cronómetro manual del técnico */}
+                    <div className="flex flex-col items-start md:items-end gap-1.5 bg-slate-900/80 border border-slate-800 rounded-xl px-3 py-2">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Cronómetro · Tiempo Neto</span>
+                      <div className="flex items-center gap-2">
+                        <span className={`font-mono font-black text-lg ${isWorkRunning(activeRepair) ? "text-emerald-400" : "text-slate-200"}`}>
+                          {formatNetTime(computeNetMs(activeRepair))}
+                        </span>
+                        {isWorkRunning(activeRepair) ? (
+                          <button
+                            type="button"
+                            onClick={() => { setWorkPauseTarget(activeRepair); setWorkPauseReason(""); }}
+                            className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-500 text-slate-950 rounded-lg text-xs font-black uppercase tracking-wider hover:bg-amber-400 transition-colors"
+                          >
+                            <Pause className="w-3.5 h-3.5" />
+                            <span>Pausar</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleWorkAction(hasWorkLog(activeRepair) ? "reanudar" : "inicio")}
+                            className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-500 text-slate-950 rounded-lg text-xs font-black uppercase tracking-wider hover:bg-emerald-400 transition-colors"
+                          >
+                            <Play className="w-3.5 h-3.5" />
+                            <span>{hasWorkLog(activeRepair) ? "Reanudar" : "Iniciar"}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -898,10 +1092,22 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                                   key={idx}
                                   className="relative flex flex-col items-center justify-center gap-1 rounded-lg border border-cyan-800/40 bg-slate-950 p-3 text-center"
                                 >
-                                  <Video className="w-5 h-5 text-cyan-400" />
-                                  <span className="text-[9px] font-mono text-slate-400">
-                                    {v.durationSec}s  {(v.sizeBytes / 1024 / 1024).toFixed(2)} MB
-                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => openMesaVideoBlob(v, `Video de diagnóstico ${idx + 1}`)}
+                                    className="flex flex-col items-center justify-center gap-1 cursor-pointer group"
+                                    title="Ver video de diagnóstico"
+                                  >
+                                    <span className="w-9 h-9 bg-cyan-500/10 border border-cyan-500/30 rounded-full flex items-center justify-center group-hover:bg-cyan-500/25 transition-colors">
+                                      <Video className="w-5 h-5 text-cyan-400" />
+                                    </span>
+                                    <span className="text-[9px] font-mono text-slate-400 group-hover:text-cyan-300">
+                                      {v.durationSec}s  {(v.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                                    </span>
+                                    <span className="text-[8px] uppercase font-black tracking-wider text-cyan-400/80 group-hover:text-cyan-300">
+                                      Reproducir
+                                    </span>
+                                  </button>
                                   <button
                                     type="button"
                                     onClick={() => setDiagVideos(prev => prev.filter((_, i) => i !== idx))}
@@ -1142,6 +1348,14 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                                       <span className="text-[9px] bg-slate-950 text-cyan-400/80 px-1.5 py-0.2 rounded font-mono font-bold uppercase">
                                         x {statusShortLabels[rep.status] || "?"}
                                       </span>
+                                      {(() => {
+                                        const meta = SERVICE_TYPE_META[rep.serviceType || "diagnostico"];
+                                        return (
+                                          <span className={`text-[9px] ${meta.bg} ${meta.text} px-1.5 py-0.2 rounded font-mono font-black uppercase border ${meta.border}`}>
+                                            {meta.label}
+                                          </span>
+                                        );
+                                      })()}
                                       {rep.serviceAuthorized && (
                                         <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.2 rounded font-mono font-black uppercase border border-emerald-500/40">
                                            Servicio aprobado
@@ -1198,12 +1412,56 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
 
                   <div className="flex flex-wrap items-center gap-4 md:items-end">
                     <div className="flex flex-col items-start md:items-end">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-1">Motivo de Ingreso</span>
+                      {(() => {
+                        const meta = SERVICE_TYPE_META[activeRepair.serviceType || "diagnostico"];
+                        return (
+                          <span className={`${meta.bg} ${meta.text} border ${meta.border} font-black text-xs uppercase tracking-wide px-3 py-1.5 rounded-lg`}>
+                            {meta.label}
+                          </span>
+                        );
+                      })()}
+                      {activeRepair.serviceTypeDetail && (
+                        <span className="text-[10px] text-slate-400 font-bold uppercase mt-1">{activeRepair.serviceTypeDetail}</span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col items-start md:items-end">
                       <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-1">Estado de Taller</span>
                       <div className="flex items-center space-x-1">
                         <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse mr-1.5"></span>
                         <span className="text-sm font-bold text-cyan-400 font-display uppercase tracking-wide">
                           {STATUS_COLUMNS.find(c => c.id === activeRepair.status)?.label || activeRepair.status}
                         </span>
+                      </div>
+                    </div>
+
+                    {/* Cronómetro manual del técnico */}
+                    <div className="flex flex-col items-start md:items-end gap-1.5 bg-slate-900/80 border border-slate-800 rounded-xl px-3 py-2">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Cronómetro · Tiempo Neto</span>
+                      <div className="flex items-center gap-2">
+                        <span className={`font-mono font-black text-lg ${isWorkRunning(activeRepair) ? "text-emerald-400" : "text-slate-200"}`}>
+                          {formatNetTime(computeNetMs(activeRepair))}
+                        </span>
+                        {isWorkRunning(activeRepair) ? (
+                          <button
+                            type="button"
+                            onClick={() => { setWorkPauseTarget(activeRepair); setWorkPauseReason(""); }}
+                            className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-500 text-slate-950 rounded-lg text-xs font-black uppercase tracking-wider hover:bg-amber-400 transition-colors"
+                          >
+                            <Pause className="w-3.5 h-3.5" />
+                            <span>Pausar</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleWorkAction(hasWorkLog(activeRepair) ? "reanudar" : "inicio")}
+                            className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-500 text-slate-950 rounded-lg text-xs font-black uppercase tracking-wider hover:bg-emerald-400 transition-colors"
+                          >
+                            <Play className="w-3.5 h-3.5" />
+                            <span>{hasWorkLog(activeRepair) ? "Reanudar" : "Iniciar"}</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1257,17 +1515,6 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                           activeRepair.accessories.padlock ? "Candado x" : null,
                           activeRepair.accessories.others ? activeRepair.accessories.others : null
                         ].filter(Boolean).join(", ") || "Ninguno"}
-                      </p>
-                      <p className="mb-1 text-slate-300">
-                        <strong>Rayones/Golpes:</strong> {activeRepair.visualState.scratches ? "Sí (Rayado)" : "No"} / {activeRepair.visualState.cracks ? "Sí (Fisura)" : "No"}
-                      </p>
-                      <p className="mb-1 text-slate-300">
-                        <strong>Sistemas OK:</strong> {[
-                          activeRepair.visualState.brakesOk ? "Frenos" : "Freno",
-                          activeRepair.visualState.lightsOk ? "Luces" : "Luz",
-                          activeRepair.visualState.screenOk ? "Pantalla" : "Display",
-                          activeRepair.visualState.tiresOk ? "Llantas" : "Llanta"
-                        ].join("  ")}
                       </p>
                       
                       {/* Audiovisual verification state from PDF */}
@@ -1576,7 +1823,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                                 </span>
                                 <span className="text-slate-100 font-medium truncate">{p.description}</span>
                               </div>
-                               {techMode !== "reparacion" && activeRepair.status !== "repairing" && (
+                               {activeRepair.status === "repairing" && (
                                 <button
                                   type="button"
                                   onClick={() => removeSparePart(p.id)}
@@ -1591,7 +1838,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         </ul>
                       )}
 
-                      {techMode !== "reparacion" && activeRepair.status !== "repairing" && (
+                      {activeRepair.status === "repairing" && (
                         <div className="flex flex-col sm:flex-row gap-2">
                           <div className="flex items-center gap-2 shrink-0">
                             <button
@@ -1638,7 +1885,7 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                         </div>
                       )}
 
-{techMode !== "reparacion" && spareParts.length > 0 && (
+{activeRepair.status === "repairing" && spareParts.length > 0 && (
                         <div className="flex justify-end pt-2">
                           <button
                             type="button"
@@ -1728,27 +1975,112 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                       </span>
                       <p className="text-xs text-purple-300/70">El vehículo está en revisión de Control de Calidad. Solo la asesora de servicio puede devolverlo a mesa de trabajo si no pasa la revisión.</p>
                     </div>
-                  ) : activeRepair.status === "repairing" ? (
+) : activeRepair.status === "repairing" ? (
                     <div className="space-y-3">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!technicianName || !technicianName.trim()) {
-                              alert("Debes ingresar el nombre del técnico responsable antes de enviar a Control de Calidad.");
-                              return;
-                            }
-                            if (!techSignature) {
-                              alert("Debes registrar tu firma técnica antes de enviar a Control de Calidad.");
-                              return;
-                            }
-                            handleUpdateStatus("testing");
-                          }}
-                          disabled={isLoading}
-                          className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm uppercase tracking-wider px-5 py-4 rounded-xl transition-all shadow-[0_0_20px_rgba(16,185,129,0.3)] flex items-center justify-center space-x-2"
-                        >
-                          <Check className="w-5 h-5" />
-                          <span>Trabajo en Mesa Culminado — Enviar a Control de Calidad</span>
-                        </button>
+                        {activeRepair.serviceType === "garantia" ? (
+                          <>
+                            <div className="bg-violet-950/30 border border-violet-500/40 rounded-xl p-3 flex items-start space-x-2">
+                              <ShieldCheck className="w-4 h-4 text-violet-400 shrink-0 mt-0.5" />
+                              <p className="text-[11px] text-violet-200/90 leading-relaxed">
+                                Servicio ingresado como <strong>GARANTÍA</strong>: el cambio de repuestos no tiene costo para el cliente. Si la falla está cubierta, envíalo directo a Control de Calidad sin pasar por presupuesto.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!technicianName || !technicianName.trim()) {
+                                  alert("Debes ingresar el nombre del técnico responsable antes de enviar a Control de Calidad.");
+                                  return;
+                                }
+                                if (!techSignature) {
+                                  alert("Debes registrar tu firma técnica antes de enviar a Control de Calidad.");
+                                  return;
+                                }
+                                handleUpdateStatus("testing", { spareParts: spareParts.filter((p) => p.description.trim()), warrantyCovered: true });
+                              }}
+                              disabled={isLoading}
+                              className="w-full bg-violet-500 hover:bg-violet-400 text-slate-950 font-black text-sm uppercase tracking-wider px-5 py-4 rounded-xl transition-all shadow-[0_0_20px_rgba(139,92,246,0.3)] flex items-center justify-center space-x-2"
+                            >
+                              <Check className="w-5 h-5" />
+                              <span>Garantía Cubierta — Cambio sin costo → Control de Calidad</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!technicianName || !technicianName.trim()) {
+                                  alert("Debes ingresar el nombre del técnico responsable antes de enviar a Presupuesto y Pago.");
+                                  return;
+                                }
+                                if (!techSignature) {
+                                  alert("Debes registrar tu firma técnica antes de enviar a Presupuesto y Pago.");
+                                  return;
+                                }
+                                const clean = spareParts.filter((p) => p.description.trim());
+                                if (clean.length === 0) {
+                                  alert("Debes registrar los repuestos o trabajos a cobrar antes de enviar a Presupuesto y Pago.");
+                                  return;
+                                }
+                                handleUpdateStatus("quoted", { spareParts: clean, warrantyCovered: false });
+                              }}
+                              disabled={isLoading}
+                              className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase tracking-wider px-5 py-4 rounded-xl transition-all shadow-[0_0_20px_rgba(245,158,11,0.3)] flex items-center justify-center space-x-2"
+                            >
+                              <Calculator className="w-5 h-5" />
+                              <span>Falla NO cubierta — Enviar a Presupuesto y Pago</span>
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!technicianName || !technicianName.trim()) {
+                                  alert("Debes ingresar el nombre del técnico responsable antes de enviar a Presupuesto y Pago.");
+                                  return;
+                                }
+                                if (!techSignature) {
+                                  alert("Debes registrar tu firma técnica antes de enviar a Presupuesto y Pago.");
+                                  return;
+                                }
+                                const clean = spareParts.filter((p) => p.description.trim());
+                                if (clean.length === 0) {
+                                  alert("Debes registrar los repuestos o trabajos a cambiar antes de enviar a Presupuesto y Pago.");
+                                  return;
+                                }
+                                handleUpdateStatus("quoted", { spareParts: clean });
+                              }}
+                              disabled={isLoading}
+                              className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase tracking-wider px-5 py-4 rounded-xl transition-all shadow-[0_0_20px_rgba(245,158,11,0.3)] flex items-center justify-center space-x-2"
+                            >
+                              <Calculator className="w-5 h-5" />
+                              <span>Enviar a Presupuesto y Pago</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!technicianName || !technicianName.trim()) {
+                                  alert("Debes ingresar el nombre del técnico responsable antes de enviar a Control de Calidad.");
+                                  return;
+                                }
+                                if (!techSignature) {
+                                  alert("Debes registrar tu firma técnica antes de enviar a Control de Calidad.");
+                                  return;
+                                }
+                                const clean = spareParts.filter((p) => p.description.trim());
+                                if (clean.length === 0) {
+                                  alert("Debes registrar los repuestos o trabajos realizados antes de enviar a Control de Calidad.");
+                                  return;
+                                }
+                                handleUpdateStatus("testing", { spareParts: clean });
+                              }}
+                              disabled={isLoading}
+                              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm uppercase tracking-wider px-5 py-4 rounded-xl transition-all shadow-[0_0_20px_rgba(16,185,129,0.3)] flex items-center justify-center space-x-2"
+                            >
+                              <Check className="w-5 h-5" />
+                              <span>Trabajo en Mesa Culminado — Enviar a Control de Calidad</span>
+                            </button>
+                          </>
+                        )}
                       </div>
                     ) : null}
 
@@ -1785,6 +2117,83 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
                       </div>
                     )}
 
+
+                  {/* REGISTRO DE ACTIVIDAD - Accesible para el técnico */}
+                  <div className="bg-slate-900 rounded-2xl border border-cyan-500/25 shadow-lg overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setShowActivityLog(v => !v)}
+                      className="w-full flex items-center justify-between px-4 sm:px-5 py-2.5 hover:bg-cyan-500/5 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Activity className="w-4 h-4 text-cyan-400" />
+                        <span className="text-xs font-black uppercase tracking-wider text-cyan-300">Registro de Actividad</span>
+                        <span className="px-2 py-0.5 rounded-full bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400">
+                          {activityEvents.length}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-slate-400">
+                        <span className="text-[10px] uppercase tracking-wider hidden sm:inline">{showActivityLog ? "Ocultar" : "Ver registro"}</span>
+                        {showActivityLog ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                      </div>
+                    </button>
+
+                    {showActivityLog && (
+                      <div className="border-t border-cyan-500/20">
+                        <div className="flex flex-wrap items-center gap-1.5 px-4 sm:px-5 py-2 bg-slate-950/40">
+                          <span className="text-[9px] uppercase tracking-widest text-slate-500 mr-1">Rango</span>
+                          {PERIOD_PRESETS.map(p => (
+                            <button
+                              key={p.key}
+                              type="button"
+                              onClick={() => setActivityRange(p.key)}
+                              className={"px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wide border transition-all " + (activityRange === p.key ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40" : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700")}
+                            >
+                              {p.label}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setActivityRange("todo")}
+                            className={"px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wide border transition-all " + (activityRange === "todo" ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40" : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700")}
+                          >
+                            Todo
+                          </button>
+                        </div>
+
+                        <div className="divide-y divide-slate-800/60 max-h-[340px] overflow-y-auto">
+                          {activityEvents.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-8 text-center">
+                              <Inbox className="w-7 h-7 text-slate-600 mb-2" />
+                              <p className="text-xs text-slate-400">Sin actividad en este rango</p>
+                              <p className="text-[10px] text-slate-600 mt-1">Aquí aparecerán envíos, derivaciones y cambios de estado</p>
+                            </div>
+                          ) : (
+                            activityEvents.map(ev => (
+                              <div key={ev.key} className="flex items-start gap-2 px-4 sm:px-5 py-2 hover:bg-slate-850/40 transition-colors">
+                                <div className="w-1 h-1 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(6,182,212,0.6)] shrink-0 mt-1.5"></div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="font-mono text-[10px] font-bold text-cyan-400">{ev.repairId}</span>
+                                      <span className="text-slate-600">•</span>
+                                      <span className="text-[11px] font-semibold text-slate-200 truncate max-w-[190px]">{ev.clientName}</span>
+                                      <span className="text-[9px] text-slate-500">{ev.vehicle}</span>
+                                    </div>
+                                    <span className="text-[9px] text-slate-500 font-mono">
+                                      {new Date(ev.date).toLocaleDateString([], { day: '2-digit', month: '2-digit' })} {new Date(ev.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                  </div>
+                                  <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">{ev.description}</p>
+                                  <p className="text-[9px] text-slate-500">Operador: <strong className="text-slate-300">{ev.user}</strong></p>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
                   {/* 5. Historial y Línea de Tiempo (Logs) */}
                   <div className="space-y-3">
@@ -1828,7 +2237,78 @@ export default function TechnicianView({ repairs, onUpdateRepair, isLoading, use
         </div>
       )}
 
+
+
       {/* MODAL DE ENTREGA AL CLIENTE: confirmación + firma del cliente */}
+      {/* Modal de pausa del cronómetro manual: motivo opcional (ej. esperando repuesto) */}
+      {workPauseTarget && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+          <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-950 shrink-0">
+              <div className="flex items-center space-x-2">
+                <Pause className="w-5 h-5 text-amber-400" />
+                <span className="font-semibold text-sm text-slate-100 uppercase tracking-wider">Pausar Cronómetro</span>
+              </div>
+              <button
+                onClick={() => setWorkPauseTarget(null)}
+                className="p-1 text-slate-400 hover:text-slate-100 bg-slate-850 hover:bg-slate-800 rounded-lg transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs space-y-1">
+                <p className="flex justify-between">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Orden</span>
+                  <span className="font-mono font-black text-cyan-400">{workPauseTarget.id}</span>
+                </p>
+                <p className="flex justify-between">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Cliente</span>
+                  <span className="text-slate-200 font-semibold">{workPauseTarget.client.name}</span>
+                </p>
+                <p className="flex justify-between">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Vehículo</span>
+                  <span className="text-slate-200 font-semibold">{workPauseTarget.vehicle.brand} {workPauseTarget.vehicle.model}</span>
+                </p>
+                <p className="flex justify-between">
+                  <span className="text-slate-500 font-bold uppercase tracking-wider">Tiempo neto actual</span>
+                  <span className="font-mono font-black text-emerald-400">{formatNetTime(computeNetMs(workPauseTarget))}</span>
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Motivo de la pausa <span className="text-slate-600 normal-case font-medium">(opcional)</span></label>
+                <textarea
+                  value={workPauseReason}
+                  onChange={(e) => setWorkPauseReason(e.target.value)}
+                  placeholder="Ej. esperando repuesto, esperando aprobación del cliente..."
+                  rows={3}
+                  className="w-full px-3 py-2.5 bg-slate-950 text-xs text-slate-200 border border-slate-800 rounded-xl focus:outline-none focus:border-amber-500 transition-colors resize-none"
+                />
+                <p className="text-[10px] text-slate-500 font-mono">Tiempo de pausa no cuenta en el tiempo neto de trabajo.</p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 p-4 bg-slate-950 border-t border-slate-800 shrink-0">
+              <button
+                onClick={() => setWorkPauseTarget(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => handleWorkAction("pausa", workPauseReason.trim())}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-black uppercase tracking-wider transition-colors flex items-center space-x-1.5"
+              >
+                <Pause className="w-4 h-4" />
+                <span>Pausar Trabajo</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showDeliveryModal && activeRepair && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
           <div className="relative w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl max-h-[92vh] flex flex-col">
@@ -2074,7 +2554,7 @@ function TvCard({
           </p>
         ) : (
           <div className="space-y-1.5">
-            {item.spareParts.map((p) => {
+            {(item.spareParts || []).map((p) => {
               const typeInfo =
                 p.type === "cambio"
                   ? { l: "Cambio", c: "text-cyan-300 bg-cyan-950 border-cyan-800/40" }
