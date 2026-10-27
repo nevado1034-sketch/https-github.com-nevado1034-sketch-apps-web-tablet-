@@ -11,6 +11,7 @@ export interface LocalAccess {
   key: string;
   name: string;
   jefa: LocalUser;
+  jefas?: LocalUser[];
   tecnicos: LocalUser[];
 }
 
@@ -47,7 +48,7 @@ export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
 export const ROLE_TABS: Record<UserRole, string[]> = {
   admin: ["admin-dashboard", "accesos"],
   jefa: ["reception", "derivar", "presupuesto", "control", "calidad", "express", "clientes", "tiempos"],
-  tecnico: ["technician", "repair"]
+  tecnico: ["repair"]
 };
 
 export const LOCALES: { key: string; name: string }[] = [
@@ -64,6 +65,7 @@ export function defaultConfig(): AuthConfig {
       key: l.key,
       name: l.name,
       jefa: { name: "", clave: "" },
+      jefas: [],
       tecnicos: []
     }))
   };
@@ -85,7 +87,8 @@ export function isValidConfig(c: any): c is AuthConfig {
         l.jefa &&
         typeof l.jefa.name === "string" &&
         typeof l.jefa.clave === "string" &&
-        Array.isArray(l.tecnicos)
+        Array.isArray(l.tecnicos) &&
+        (!l.jefas || (Array.isArray(l.jefas) && l.jefas.every((j: any) => j && typeof j.name === "string" && typeof j.clave === "string")))
     )
   );
 }
@@ -112,6 +115,11 @@ export function findUser(config: AuthConfig, name: string, clave: string): AuthS
     if (normName(loc.jefa.name) === cleanName && loc.jefa.clave === clave) {
       return { role: "jefa", name: loc.jefa.name.trim(), localKey: loc.key };
     }
+    for (const a of loc.jefas || []) {
+      if (normName(a.name) === cleanName && a.clave === clave) {
+        return { role: "jefa", name: a.name.trim(), localKey: loc.key };
+      }
+    }
     for (const t of loc.tecnicos) {
       if (normName(t.name) === cleanName && t.clave === clave) {
         return { role: "tecnico", name: t.name.trim(), localKey: loc.key };
@@ -129,6 +137,11 @@ export function listUsers(config: AuthConfig): UserEntry[] {
   for (const loc of config.locales) {
     if (loc.jefa.name.trim()) {
       users.push({ role: "jefa", name: loc.jefa.name.trim(), localKey: loc.key, localName: loc.name });
+    }
+    for (const a of loc.jefas || []) {
+      if (a.name.trim()) {
+        users.push({ role: "jefa", name: a.name.trim(), localKey: loc.key, localName: loc.name });
+      }
     }
     for (const t of loc.tecnicos) {
       if (t.name.trim()) {

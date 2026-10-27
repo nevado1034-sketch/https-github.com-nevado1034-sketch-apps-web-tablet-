@@ -3,7 +3,7 @@ import { ShieldCheck, UserRound, MapPin, Save, Plus, Trash2, Lock, Store } from 
 import { AuthConfig, LocalAccess, defaultConfig } from "../auth";
 
 interface AccessManagerProps {
-  initial: AuthConfig;
+  initial: AuthConfig | null;
   onSave: (config: AuthConfig) => void;
   saveLabel?: string;
 }
@@ -15,6 +15,9 @@ function cleanConfig(config: AuthConfig): AuthConfig {
       key: loc.key,
       name: loc.name,
       jefa: { name: loc.jefa.name.trim(), clave: loc.jefa.clave },
+      jefas: (loc.jefas || [])
+        .filter((a) => a.name.trim() !== "" || a.clave !== "")
+        .map((a) => ({ name: a.name.trim(), clave: a.clave })),
       tecnicos: loc.tecnicos
         .filter((t) => t.name.trim() !== "" || t.clave !== "")
         .map((t) => ({ name: t.name.trim(), clave: t.clave }))
@@ -39,6 +42,30 @@ export default function AccessManager({ initial, onSave, saveLabel }: AccessMana
     setConfig((c) => {
       const locales = [...c.locales];
       locales[idx] = { ...locales[idx], jefa: { ...locales[idx].jefa, [field]: value } };
+      return { ...c, locales };
+    });
+
+  const updateJefaExtra = (locIdx: number, jefaIdx: number, field: "name" | "clave", value: string) =>
+    setConfig((c) => {
+      const locales = [...c.locales];
+      const jefas = [...(locales[locIdx].jefas || [])];
+      jefas[jefaIdx] = { ...jefas[jefaIdx], [field]: value };
+      locales[locIdx] = { ...locales[locIdx], jefas };
+      return { ...c, locales };
+    });
+
+  const addJefaExtra = (locIdx: number) =>
+    setConfig((c) => {
+      const locales = [...c.locales];
+      locales[locIdx] = { ...locales[locIdx], jefas: [...(locales[locIdx].jefas || []), { name: "", clave: "" }] };
+      return { ...c, locales };
+    });
+
+  const removeJefaExtra = (locIdx: number, jefaIdx: number) =>
+    setConfig((c) => {
+      const locales = [...c.locales];
+      const jefas = (locales[locIdx].jefas || []).filter((_, i) => i !== jefaIdx);
+      locales[locIdx] = { ...locales[locIdx], jefas };
       return { ...c, locales };
     });
 
@@ -68,7 +95,10 @@ export default function AccessManager({ initial, onSave, saveLabel }: AccessMana
 
   const adminOk = config.admin.name.trim() !== "" && config.admin.clave !== "";
   const localesOk = config.locales.every(
-    (loc) => loc.jefa.name.trim() !== "" && loc.jefa.clave !== ""
+    (loc) =>
+      loc.jefa.name.trim() !== "" &&
+      loc.jefa.clave !== "" &&
+      (loc.jefas || []).every((a) => a.name.trim() === "" ? a.clave === "" : a.clave !== "")
   );
   const complete = adminOk && localesOk;
 
@@ -151,16 +181,69 @@ export default function AccessManager({ initial, onSave, saveLabel }: AccessMana
               </div>
             </div>
 
+            {/* Otras asesoras */}
+            <p className="text-[10px] uppercase font-bold tracking-wider text-violet-300 mb-2 flex items-center space-x-1.5">
+              <UserRound className="w-3.5 h-3.5" />
+              <span>Otras asesoras de este local</span>
+            </p>
+            {loc.jefas && loc.jefas.length === 0 && (
+              <p className="text-xs text-slate-500 italic mb-3">
+                Aún no hay otras asesoras registradas en este local.
+              </p>
+            )}
+            <div className="space-y-3 mb-3">
+              {(loc.jefas || []).map((a, jefaIdx) => (
+                <div key={jefaIdx} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-center">
+                  <div className="relative">
+                    <UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    <input
+                      type="text"
+                      value={a.name}
+                      onChange={(e) => updateJefaExtra(locIdx, jefaIdx, "name", e.target.value)}
+                      placeholder="Nombre de la asesora"
+                      className="w-full pl-9 pr-3 py-2.5 bg-slate-950 text-slate-100 text-sm border border-slate-800 rounded-xl focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20"
+                    />
+                  </div>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    <input
+                      type="text"
+                      value={a.clave}
+                      onChange={(e) => updateJefaExtra(locIdx, jefaIdx, "clave", e.target.value)}
+                      placeholder="Clave de acceso"
+                      className="w-full pl-9 pr-3 py-2.5 bg-slate-950 text-slate-100 text-sm border border-slate-800 rounded-xl focus:outline-none focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeJefaExtra(locIdx, jefaIdx)}
+                    className="p-2.5 text-slate-500 hover:text-rose-400 hover:bg-rose-950/20 rounded-lg transition-colors"
+                    title="Eliminar asesora"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => addJefaExtra(locIdx)}
+              className="flex items-center space-x-1.5 px-3 py-2 bg-slate-950 hover:bg-slate-800 text-violet-300 border border-violet-500/25 rounded-lg text-xs font-bold transition-colors mb-5"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Agregar asesora</span>
+            </button>
+
             {/* Técnicos */}
             <p className="text-[10px] uppercase font-bold tracking-wider text-amber-400 mb-2 flex items-center space-x-1.5">
               <UserRound className="w-3.5 h-3.5" />
               <span>Técnicos de este local</span>
             </p>
-            {loc.tecnicos.length === 0 && (
+            {!loc.tecnicos || loc.tecnicos.length === 0 ? (
               <p className="text-xs text-slate-500 italic mb-3">
                 Aún no hay técnicos registrados en este local.
               </p>
-            )}
+            ) : null}
             <div className="space-y-3 mb-3">
               {loc.tecnicos.map((t, techIdx) => (
                 <div key={techIdx} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-center">
