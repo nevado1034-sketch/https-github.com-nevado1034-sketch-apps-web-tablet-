@@ -1,23 +1,26 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   LayoutDashboard, Users, Wrench, CircleDollarSign, GraduationCap,
   Printer, FileSpreadsheet, Search, CalendarRange, Building2,
   ChevronRight, TrendingUp, Receipt, Clock, CheckCircle2, Zap,
-  Activity, AlertCircle, Timer, Target, Save, Hourglass
+  Activity, AlertCircle, Timer, Target, Save, Hourglass,
+  FileText, X, History, ChevronLeft
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import { RepairItem } from "../types";
-import { db, isFirebaseConfigured, collection, getDocs } from "../firebase";
+import { db, isFirebaseConfigured, collection, query as fbQuery, where, orderBy as fbOrderBy, limit as fbLimit, startAfter, getDocs, getCountFromServer } from "../firebase";
 import { loadConfig } from "../auth";
+import { generateRepairPdf } from "../utils/pdfGenerator";
+import { openReceipt } from "./ExpressView";
 import {
   BRANCH_LABELS, BRANCHES, BRANCH_HEX, fmtMoney, fmtDuration,
-  currentLiveStage, LIVE_STAGE_ORDER, STAGE_COLOR, STAGE_LABELS,
+  currentLiveStage, LIVE_STAGE_ORDER, STAGE_LABELS,
   STAGE_KEYS, median, stageTimings, esperaDurationMs, trafficColor,
   inReceptionPeriod, monthlyTrend, Goals, loadGoals, saveGoals
 } from "../data/metrics";
 
-type ReporteView = "dashboard" | "clientes" | "servicios" | "finanzas" | "tecnicos";
+type ReporteView = "dashboard" | "clientes" | "servicios" | "finanzas" | "tecnicos" | "bitacora";
 type RangePreset = "hoy" | "7d" | "30d" | "todo" | "custom";
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -43,11 +46,12 @@ const PRESETS: Array<{ key: RangePreset; label: string }> = [
 ];
 
 const NAV: Array<{ key: ReporteView; label: string; desc: string; icon: React.ElementType }> = [
-  { key: "dashboard", label: "Dashboard", desc: "Operación en vivo · resumen", icon: LayoutDashboard },
+  { key: "dashboard", label: "Dashboard", desc: "Resumen general", icon: LayoutDashboard },
   { key: "clientes", label: "Lista de Clientes", desc: "Clientes registrados", icon: Users },
   { key: "servicios", label: "Tipos de Servicio", desc: "Conteo por servicio", icon: Wrench },
   { key: "finanzas", label: "Finanzas", desc: "Ingresos y recibos", icon: CircleDollarSign },
-  { key: "tecnicos", label: "Técnicos", desc: "Horas de trabajo", icon: GraduationCap }
+  { key: "tecnicos", label: "Técnicos", desc: "Horas de trabajo", icon: GraduationCap },
+  { key: "bitacora", label: "Bitácora de Cambios", desc: "Ediciones de recepción por asesora", icon: History }
 ];
 
 const BAR_COLOR: Record<string, string> = {
@@ -114,6 +118,19 @@ function tsOf(v: string | undefined): number {
   return isFinite(t) ? t : NaN;
 }
 
+function clientTs(c: any): number {
+  const v = c?.createdAt;
+  if (v == null) return NaN;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const t = new Date(v).getTime();
+    return isFinite(t) ? t : NaN;
+  }
+  if (typeof v.toDate === "function") { try { return v.toDate().getTime(); } catch { /* noop */ } }
+  if (typeof v.seconds === "number" && isFinite(v.seconds)) return v.seconds * 1000;
+  return NaN;
+}
+
 function fmtFecha(ts: number): string {
   if (!isFinite(ts) || ts <= 0) return "—";
   const d = new Date(ts);
@@ -124,6 +141,14 @@ function fmtFechaHora(ts: number): string {
   if (!isFinite(ts) || ts <= 0) return "—";
   const d = new Date(ts);
   return `${fmtFecha(ts)} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+const CLIENTES_PAGE_SIZE = 50;
+
+function getClientesPageNumbers(current: number, total: number): number[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const set = new Set<number>([1, total, current - 1, current, current + 1]);
+  return Array.from(set).filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
 }
 
 function expressTs(e: any): number {
@@ -153,6 +178,206 @@ function exportExcel(rows: unknown[][], name: string) {
   XLSX.writeFile(wb, `${name}.xlsx`);
 }
 
+const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+const MESES_GRID = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+const DIAS_SEM = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"];
+
+function CalendarPicker({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  const [open, setOpen] = useState(false);
+  const [viewYear, setViewYear] = useState(() => {
+    const v = value ? new Date(value + "T00:00:00") : new Date();
+    return isNaN(v.getTime()) ? new Date().getFullYear() : v.getFullYear();
+  });
+  const [viewMonth, setViewMonth] = useState(() => {
+    const v = value ? new Date(value + "T00:00:00") : new Date();
+    return isNaN(v.getTime()) ? new Date().getMonth() : v.getMonth();
+  });
+  const [mode, setMode] = useState<"days" | "months" | "years">("days");
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const selected = value ? new Date(value + "T00:00:00") : null;
+  const today = new Date();
+
+  const firstDow = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+
+  const fmt = (d: Date) => {
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    return `${d.getFullYear()}-${mm}-${dd}`;
+  };
+
+  const pick = (d: Date) => {
+    onChange(fmt(d));
+    setOpen(false);
+    setMode("days");
+  };
+
+  const years = useMemo(() => {
+    const y = viewYear;
+    const start = Math.floor(y / 20) * 20;
+    return Array.from({ length: 20 }, (_, i) => start + i);
+  }, [viewYear]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => { setOpen((o) => !o); setMode("days"); setViewYear(selected ? selected.getFullYear() : today.getFullYear()); setViewMonth(selected ? selected.getMonth() : today.getMonth()); }}
+        className={`px-2.5 py-1.5 bg-slate-950 text-slate-200 text-xs border rounded-lg focus:outline-none focus:border-cyan-500/50 transition-all font-mono min-w-[6.5rem] ${
+          open ? "border-cyan-500/60" : "border-slate-800 hover:border-slate-600"
+        }`}
+        title="Elegir fecha"
+      >
+        {selected ? `${String(selected.getDate()).padStart(2, "0")}/${String(selected.getMonth() + 1).padStart(2, "0")}/${selected.getFullYear()}` : placeholder || "dd/mm/aaaa"}
+      </button>
+
+      {open && (
+        <div className="absolute top-full left-0 mt-2 z-50 w-72 bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl p-3 pointer-events-auto">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-2">
+            <button
+              type="button"
+              onClick={() => mode === "days" ? setViewMonth((m) => (m === 0 ? (setViewYear((y) => y - 1), 11) : m - 1)) : mode === "months" ? setViewYear((y) => y - 1) : setViewYear((y) => y - 10)}
+              className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+              title={mode === "days" ? "Mes anterior" : mode === "months" ? "Año anterior" : "Década anterior"}
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode(mode === "days" ? "months" : mode === "months" ? "years" : "days")}
+              className="px-2 py-1 rounded-lg hover:bg-slate-800 text-slate-100 text-sm font-bold uppercase tracking-wide transition-colors cursor-pointer"
+            >
+              {mode === "days" && `${MESES[viewMonth]} ${viewYear}`}
+              {mode === "months" && `${viewYear}`}
+              {mode === "years" && `${years[0]} – ${years[years.length - 1]}`}
+            </button>
+            <button
+              type="button"
+              onClick={() => mode === "days" ? setViewMonth((m) => (m === 11 ? (setViewYear((y) => y + 1), 0) : m + 1)) : mode === "months" ? setViewYear((y) => y + 1) : setViewYear((y) => y + 10)}
+              className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+              title={mode === "days" ? "Mes siguiente" : mode === "months" ? "Año siguiente" : "Década siguiente"}
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          {mode === "days" && (
+            <>
+              {/* Weekday header */}
+              <div className="grid grid-cols-7 text-center text-[10px] font-bold text-slate-500 uppercase mb-1">
+                {DIAS_SEM.map((d) => <span key={d} className="py-1">{d}</span>)}
+              </div>
+              <div className="grid grid-cols-7 gap-0.5">
+                {Array.from({ length: firstDow }).map((_, i) => <span key={`e${i}`} />)}
+                {Array.from({ length: daysInMonth }).map((_, i) => {
+                  const d = i + 1;
+                  const date = new Date(viewYear, viewMonth, d);
+                  const isSel = selected && selected.getFullYear() === viewYear && selected.getMonth() === viewMonth && selected.getDate() === d;
+                  const isToday = today.getFullYear() === viewYear && today.getMonth() === viewMonth && today.getDate() === d;
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => pick(date)}
+                      className={`h-8 rounded-lg text-xs font-mono transition-all cursor-pointer ${
+                        isSel
+                          ? "bg-cyan-500 text-slate-950 font-black shadow-[0_0_8px_rgba(6,182,212,0.5)]"
+                          : isToday
+                          ? "bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40"
+                          : "text-slate-300 hover:bg-slate-800"
+                      }`}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => pick(new Date())}
+                  className="px-2 py-1 text-[10px] font-bold text-cyan-300 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                >
+                  Hoy
+                </button>
+                {selected && (
+                  <button
+                    type="button"
+                    onClick={() => { onChange(""); setOpen(false); }}
+                    className="px-2 py-1 text-[10px] font-bold text-slate-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {mode === "months" && (
+            <div className="grid grid-cols-3 gap-1.5">
+              {MESES_GRID.map((m, i) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => { setViewMonth(i); setMode("days"); }}
+                  className={`py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    selected && selected.getFullYear() === viewYear && selected.getMonth() === i
+                      ? "bg-cyan-500 text-slate-950 font-black"
+                      : i === viewMonth
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                      : "text-slate-300 hover:bg-slate-800"
+                  }`}
+                >
+                  {m.slice(0, 3)}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {mode === "years" && (
+            <div className="grid grid-cols-5 gap-1.5">
+              {years.map((y) => (
+                <button
+                  key={y}
+                  type="button"
+                  onClick={() => { if (y !== viewYear) setViewYear(y); setMode("months"); }}
+                  className={`py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    selected && selected.getFullYear() === y
+                      ? "bg-cyan-500 text-slate-950 font-black"
+                      : y === today.getFullYear()
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                      : "text-slate-300 hover:bg-slate-800"
+                  }`}
+                >
+                  {y}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─────────────────────── COMPONENTE PRINCIPAL ───────────────────────────────
 interface AdminReportesProps {
   repairs: RepairItem[];
@@ -166,12 +391,154 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
   const [customTo, setCustomTo] = useState("");
   const [sede, setSede] = useState<string>("__all__");
   const [q, setQ] = useState("");
-  const [clientes, setClientes] = useState<any[]>([]);
+  const [clientesTotal, setClientesTotal] = useState(0);
+  const [clientesPages, setClientesPages] = useState<Record<number, any[]>>({});
+  const [clientesCursors, setClientesCursors] = useState<Record<number, any>>({});
+  const [clientesPage, setClientesPage] = useState(1);
+  const [clientesLoading, setClientesLoading] = useState(false);
   const [clientesOk, setClientesOk] = useState(false);
+  const [clientesSearch, setClientesSearch] = useState<null | { term: string; results: any[]; fromServer: boolean }>(null);
+  const [clientesExporting, setClientesExporting] = useState(false);
+  const [clientesAll, setClientesAll] = useState<any[] | null>(null);
   const [now, setNow] = useState<number>(() => Date.now());
   const [editingGoals, setEditingGoals] = useState(false);
   const [draftGoals, setDraftGoals] = useState<Goals>(() => loadGoals());
   const [goals, setGoals] = useState<Goals>(() => loadGoals());
+
+  const fetchClientesSnapshot = async (upToPage: number, filt: { from: number; to: number } | null): Promise<void> => {
+    const want = Math.max(1, upToPage);
+    const cursors = { ...clientesCursors };
+    for (let p = 1; p <= want; p++) {
+      if (clientesPages[p]) continue;
+      const conds: any[] = filt
+        ? [where("createdAt", ">=", filt.from), where("createdAt", "<=", filt.to)]
+        : [];
+      const q = fbQuery(
+        collection(db, "clientes"),
+        ...conds,
+        filt ? fbOrderBy("createdAt", "desc") : fbOrderBy("internalId", "asc"),
+        fbLimit(CLIENTES_PAGE_SIZE),
+        ...(p > 1 && cursors[p - 1] ? [startAfter(cursors[p - 1])] : [])
+      );
+      const snap = await getDocs(q);
+      const data = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as any) }))
+        .filter((c) => c.archived !== true && !c.mergedInto)
+        .sort((a, b) => filt ? (clientTs(b) - clientTs(a)) : (Number(a.internalId?.replace(/\D/g, "")) || 0) - (Number(b.internalId?.replace(/\D/g, "")) || 0));
+      setClientesPages((prev) => ({ ...prev, [p]: data }));
+      const last = snap.docs[snap.docs.length - 1];
+      cursors[p] = last || cursors[p - 1];
+      setClientesCursors((prev) => ({ ...prev, [p]: last || prev[p - 1] }));
+    }
+  };
+
+  const loadClientesPage = async (target: number) => {
+    if (!isFirebaseConfigured || !db) return;
+    if (preset !== "todo") {
+      setClientesPage(Math.max(1, target));
+      setClientesOk(true);
+      return;
+    }
+    setClientesLoading(true);
+    try {
+      await fetchClientesSnapshot(target, null);
+      setClientesPage(target);
+      setClientesOk(true);
+    } catch {
+      setClientesOk(false);
+    } finally {
+      setClientesLoading(false);
+    }
+  };
+
+  const searchClientes = async (term: string) => {
+    const ql = term.trim().toLowerCase();
+    if (!ql) {
+      setClientesSearch(null);
+      if (preset === "todo") {
+        setClientesLoading(true);
+        try { await fetchClientesSnapshot(1, null); } finally { setClientesLoading(false); }
+      }
+      setClientesPage(1);
+      return;
+    }
+    if (preset !== "todo") {
+      const list = clientesPeriodo || [];
+      const results = list
+        .filter((c) =>
+          String(c.name || "").toLowerCase().includes(ql) ||
+          String(c.dni || "").toLowerCase().includes(ql) ||
+          String(c.phone || "").toLowerCase().includes(ql) ||
+          String(c.id || "").toLowerCase().includes(ql)
+        )
+        .slice(0, 200);
+      setClientesSearch({ term: ql, results, fromServer: false });
+      return;
+    }
+    setClientesLoading(true);
+    try {
+      const LIM = 40;
+      const fields = ["internalId", "name", "dni", "phone"];
+      const prefixes: any[] = [];
+      for (const field of fields) {
+        try {
+          const lo = ql;
+          const hi = ql + "\uf8ff";
+          const qry = fbQuery(
+            collection(db, "clientes"),
+            where(field, ">=", lo),
+            where(field, "<=", hi),
+            fbLimit(LIM)
+          );
+          const snap = await getDocs(qry);
+          prefixes.push(...snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+        } catch { /* consulta sin índice compuesto: se ignora */ }
+      }
+      const seen = new Map<string, any>();
+      prefixes.forEach((c) => { if (c.archived !== true && !c.mergedInto) seen.set(c.id || c.internalId || JSON.stringify(c), c); });
+      const results = Array.from(seen.values())
+        .filter((c) =>
+          String(c.name || "").toLowerCase().includes(ql) ||
+          String(c.dni || "").toLowerCase().includes(ql) ||
+          String(c.phone || "").toLowerCase().includes(ql) ||
+          String(c.internalId || "").toLowerCase().includes(ql)
+        )
+        .sort((a, b) => String(a.internalId || "").localeCompare(String(b.internalId || ""), "en", { numeric: true }))
+        .slice(0, 200);
+      setClientesSearch({ term: ql, results, fromServer: results.length > 0 });
+    } catch {
+      setClientesSearch({ term: ql, results: [], fromServer: true });
+    } finally {
+      setClientesLoading(false);
+    }
+  };
+
+  const loadAllClientesForExport = async (filt: { from: number; to: number } | null): Promise<any[]> => {
+    if (preset !== "todo") return (clientesPeriodo || []).slice();
+    if (!isFirebaseConfigured || !db) return [];
+    setClientesExporting(true);
+    try {
+      const out: any[] = [];
+      let cursor: any = null;
+      let guard = 0;
+      while (guard++ < 200) {
+        const q = fbQuery(
+          collection(db, "clientes"),
+          fbOrderBy("internalId", "asc"),
+          fbLimit(CLIENTES_PAGE_SIZE),
+          ...(cursor ? [startAfter(cursor)] : [])
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) break;
+        out.push(...snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })).filter((c) => c.archived !== true && !c.mergedInto));
+        cursor = snap.docs[snap.docs.length - 1];
+        if (snap.docs.length < CLIENTES_PAGE_SIZE) break;
+      }
+      return out.sort((a, b) => (Number(a.internalId?.replace(/\D/g, "")) || 0) - (Number(b.internalId?.replace(/\D/g, "")) || 0));
+    } finally {
+      setClientesExporting(false);
+    }
+  };
 
   const range = useMemo(() => rangeOf(preset, customFrom, customTo), [preset, customFrom, customTo]);
 
@@ -186,18 +553,28 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
   useEffect(() => {
     if (!isFirebaseConfigured || !db) return;
     let mounted = true;
-    const load = async () => {
+    const init = async () => {
       try {
-        const snap = await getDocs(collection(db, "clientes"));
-        const data = snap.docs
-          .map((d) => ({ id: d.id, ...d.data() } as any))
-          .filter((c) => c.archived !== true && !c.mergedInto);
-        if (mounted) { setClientes(data); setClientesOk(true); }
-      } catch { if (mounted) setClientesOk(false); }
+        setClientesPages({});
+        setClientesCursors({});
+        setClientesPage(1);
+        setClientesSearch(null);
+        setClientesAll(null);
+        if (preset === "todo") {
+          const countQ = fbQuery(collection(db, "clientes"));
+          const countSnap = await getCountFromServer(countQ);
+          if (mounted) setClientesTotal(countSnap.data().count);
+          await loadClientesPage(1);
+        }
+        if (mounted) setClientesOk(true);
+      } catch {
+        if (mounted) { setClientesOk(false); setClientesTotal(0); }
+      }
     };
-    load();
+    init();
     return () => { mounted = false; };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset, customFrom, customTo, range.from, range.to]);
 
   // ── DATOS SEGÚN SEDE ──
   const scopedRepairs = useMemo(
@@ -208,6 +585,58 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     () => expressReceipts.filter((e) => sede === "__all__" || e.localKey === sede),
     [expressReceipts, sede]
   );
+
+  // Clientes con actividad en el período (derivados de OTs y recibos Express),
+  // usados cuando el filtro NO es "Todo" (Hoy / 7d / 30d / personalizado).
+  const clientesPeriodo = useMemo(() => {
+    if (preset === "todo") return null;
+    const map = new Map<string, any>();
+    const add = (c: any, ts: number) => {
+      if (c.archived === true || c.mergedInto) return;
+      const key = String(c.dni || "").trim() || String(c.phone || "").trim() || c.id || "";
+      if (!key) return;
+      const prev = map.get(key);
+      if (!prev || ts > prev._ts) {
+        map.set(key, { ...c, _ts: ts });
+      }
+    };
+    scopedRepairs.forEach((r) => {
+      const t = tsOf(r.receptionDate);
+      if (!inRange(t, range)) return;
+      add({
+        id: r.id,
+        internalId: r.client?.internalId || "",
+        name: r.client?.name || "",
+        dni: r.client?.dni || "",
+        phone: r.client?.phone || "",
+        email: r.client?.email || "",
+        vehicleType: r.vehicle?.type || "",
+        vehicleBrand: r.vehicle?.brand || "",
+        vehicleModel: r.vehicle?.model || "",
+        updatedAt: r.receptionDate
+      }, t);
+    });
+    scopedExpress.forEach((e) => {
+      const t = expressTs(e);
+      if (!inRange(t, range)) return;
+      add({
+        id: e.correlative || "",
+        internalId: e.clientInternalId || "",
+        name: e.clientName || "",
+        dni: e.clientDni || "",
+        phone: e.clientPhone || "",
+        email: "",
+        vehicleType: e.vehicleType || "",
+        vehicleBrand: "",
+        vehicleModel: "",
+        updatedAt: t
+      }, t);
+    });
+    return Array.from(map.values())
+      .sort((a, b) => (b._ts || 0) - (a._ts || 0))
+      .map(({ _ts, ...rest }) => rest);
+     
+  }, [preset, range, scopedRepairs, scopedExpress]);
 
   // Órdenes activas con su etapa en vivo
   const liveRows = useMemo(() => {
@@ -245,19 +674,48 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
   }, [scopedRepairs, byStage, alerts]);
 
   const clientesFiltered = useMemo(() => {
-    const ql = q.trim().toLowerCase();
-    const list = clientes.slice().sort((a, b) => {
+    if (clientesSearch) return clientesSearch.results;
+    if (preset !== "todo") {
+      const list = clientesPeriodo || [];
+      const start = (clientesPage - 1) * CLIENTES_PAGE_SIZE;
+      return list.slice(start, start + CLIENTES_PAGE_SIZE);
+    }
+    const page = clientesPages[clientesPage] || [];
+    return page.slice().sort((a, b) => {
       const ia = String(a.internalId || ""); const ib = String(b.internalId || "");
       return ia.localeCompare(ib, "en", { numeric: true });
     });
-    if (!ql) return list;
-    return list.filter((c) =>
-      String(c.name || "").toLowerCase().includes(ql) ||
-      String(c.dni || "").toLowerCase().includes(ql) ||
-      String(c.phone || "").toLowerCase().includes(ql) ||
-      String(c.internalId || "").toLowerCase().includes(ql)
-    );
-  }, [clientes, q]);
+     
+  }, [clientesSearch, clientesPeriodo, clientesPages, clientesPage, preset]);
+
+  const clientesFilteredTotal = preset !== "todo" ? (clientesPeriodo || []).length : clientesTotal;
+
+  // ── BITÁCORA DE CAMBIOS (ediciones de recepción por asesora)
+  const bitacora = useMemo(() => {
+    const out: any[] = [];
+    scopedRepairs.forEach((r) => {
+      (r.historyLog || []).forEach((log: any) => {
+        if (log.category !== "reception_edit") return;
+        const t = log.date ? new Date(log.date).getTime() : 0;
+        if (!inRange(t, range)) return;
+        out.push({
+          date: t,
+          user: log.user || "—",
+          orderId: r.id,
+          status: log.status || r.status,
+          branch: r.workshopBranch,
+          clientName: r.client?.name || "—",
+          details: log.details || log.description || "—"
+        });
+      });
+    });
+    return out.sort((a, b) => b.date - a.date);
+  }, [scopedRepairs, range]);
+
+  const bitacoraRows = useMemo(
+    () => bitacora.map((b) => [fmtFechaHora(b.date), b.user, b.orderId, b.clientName, BRANCH_LABELS[b.branch] || b.branch || "—", b.details]),
+    [bitacora]
+  );
 
   // ── SERVICIOS (por fecha)
   const servicesSummary = useMemo(() => {
@@ -312,7 +770,9 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
   const tecnicos = useMemo(() => {
     const cfg = loadConfig();
     const map: Record<string, { name: string; sede: string }> = {};
+    const jefas = new Set<string>();
     (cfg?.locales || []).forEach((l: any) => {
+      if (l?.jefa?.name) jefas.add(String(l.jefa.name).trim().toLowerCase());
       (l?.tecnicos || []).forEach((t: any) => {
         map[String(t?.name || "").trim().toLowerCase()] = { name: String(t?.name || "").trim(), sede: l.key };
       });
@@ -322,6 +782,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
       const n = String(raw || "").replace(/^T[eé]c\.\s*/i, "").trim();
       if (!n) return null;
       const key = n.toLowerCase();
+      if (jefas.has(key)) return null;
       const found = map[key] ||
         (/(carlos yucra|erick urbano|luis soto|jose rivero)/i.test(key) ? { name: n, sede: "lince_arenales" } :
         /^(elmer|cristian ojeda|diego|fernando luque)/i.test(key) ? { name: n, sede: "surco" } :
@@ -343,7 +804,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     scopedExpress.forEach((e) => {
       const t = expressTs(e);
       if (!inRange(t, range)) return;
-      const a = upsert(e.technicianName || e.createdBy || "", e.localKey);
+      const a = upsert(e.technicianName || "", e.localKey);
       if (!a) return;
       a.express++;
     });
@@ -355,7 +816,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     const otRows = scopedRepairs
       .filter((r) => r.status === "delivered")
       .map((r) => {
-        const t = tsOf(r.deliveredAt || r.deliveryDate || r.receptionDate);
+        const t = tsOf(r.deliveredAt || r.receptionDate);
         return {
           fecha: t, tipo: r.serviceType, cliente: r.client?.name || "", id: r.id,
           sede: r.workshopBranch, metodo: r.payment?.paymentMethod || "efectivo", monto: r.actualCost || r.estimatedCost || 0, origen: "OT"
@@ -422,16 +883,20 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
       ingresosEx,
       total: ingresosOT + ingresosEx,
       ticket,
-      clientes: clientes.length,
+      clientes: preset !== "todo" ? clientesFilteredTotal : (clientesOk ? clientesTotal : 0),
       tecnicos: tecnicos.length,
       ...operacionStats
     };
-  }, [scopedRepairs, scopedExpress, range, clientes, tecnicos, operacionStats]);
+  }, [scopedRepairs, scopedExpress, range, clientesTotal, clientesOk, clientesFilteredTotal, preset, tecnicos, operacionStats]);
 
   // ── Exportaciones ──
+  const clientesExportBase = clientesAll || (preset !== "todo" ? (clientesPeriodo || []) : clientesFiltered);
+  const clientesSorted = preset !== "todo"
+    ? clientesExportBase.slice().sort((a, b) => clientTs(b) - clientTs(a))
+    : clientesExportBase.slice().sort((a, b) => String(a.internalId || "").localeCompare(String(b.internalId || ""), "en", { numeric: true }));
   const clientesRows: unknown[][] = [
     ["ID", "Nombre", "DNI", "Teléfono", "Tipo de Vehículo", "Última actualización"],
-    ...clientesFiltered.map((c) => [
+    ...clientesSorted.map((c) => [
       c.internalId || c.id || "—", c.name || "", c.dni || "", c.phone || "",
       [c.vehicleType, c.vehicleBrand, c.vehicleModel].filter(Boolean).join(" ") || "—",
       c.updatedAt ? fmtFechaHora(new Date(c.updatedAt).getTime()) : (c.createdAt ? fmtFechaHora(new Date(Number(c.createdAt)).getTime()) : "—")
@@ -602,21 +1067,27 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
       const title = NAV.find((n) => n.key === view)?.label || "Reporte";
 
       if (view === "clientes" || view === "dashboard") {
+        const filt = preset !== "todo" ? { from: range.from, to: range.to } : null;
+        let clientesPdf = clientesAll;
+        if (!clientesPdf) clientesPdf = await loadAllClientesForExport(filt);
         drawHeader("Lista de Clientes");
         sectionTitle("1. Lista de Clientes");
         doc.setFont("helvetica", "normal");
         doc.setFontSize(9);
         doc.setTextColor(71, 85, 105);
-        doc.text(`Total de clientes: ${clientesFiltered.length}`, margin, y);
+        doc.text(`Total de clientes: ${clientesPdf.length}`, margin, y);
         y += 14;
-        const rows = clientesFiltered.map((c) => [
-          c.internalId || c.id || "—",
-          c.name || "—",
-          c.dni || "—",
-          c.phone || "—",
-          [c.vehicleType, c.vehicleBrand, c.vehicleModel].filter(Boolean).join(" ") || "—",
-          c.updatedAt ? fmtFechaHora(new Date(c.updatedAt).getTime()) : c.createdAt ? fmtFechaHora(new Date(Number(c.createdAt)).getTime()) : "—"
-        ]);
+        const rows = clientesPdf
+          .slice()
+          .sort((a, b) => String(a.internalId || "").localeCompare(String(b.internalId || ""), "en", { numeric: true }))
+          .map((c) => [
+            c.internalId || c.id || "—",
+            c.name || "—",
+            c.dni || "—",
+            c.phone || "—",
+            [c.vehicleType, c.vehicleBrand, c.vehicleModel].filter(Boolean).join(" ") || "—",
+            c.updatedAt ? fmtFechaHora(new Date(c.updatedAt).getTime()) : c.createdAt ? fmtFechaHora(new Date(Number(c.createdAt)).getTime()) : "—"
+          ]);
         drawTable(["ID", "Nombre", "DNI", "Teléfono", "Tipo de Vehículo", "Últ. Actualización"], rows, [0.9, 1.7, 1, 1.1, 1.7, 1.6]);
       } else if (view === "servicios") {
         drawHeader("Tipos de Servicio");
@@ -644,6 +1115,16 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
           r.cliente || "—", BRANCH_LABELS[r.sede] || r.sede || "—", fmtMoney(r.monto)
         ]);
         drawTable(["Fecha", "Origen", "Tipo", "ID", "Cliente", "Sede", "Monto"], rows, [1, 0.8, 1.2, 0.9, 1.4, 1.2, 1]);
+      } else if (view === "bitacora") {
+        drawHeader("Bitácora de Cambios · Ediciones de Recepción");
+        sectionTitle("5. Bitácora de Cambios · Ediciones de Recepción");
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.setTextColor(71, 85, 105);
+        doc.text(`Total de ediciones: ${bitacora.length}`, margin, y);
+        y += 14;
+        const rows = bitacora.map((b) => [fmtFechaHora(b.date), b.user, b.orderId, b.clientName, BRANCH_LABELS[b.branch] || b.branch || "—", b.details]);
+        drawTable(["Fecha/Hora", "Asesora", "OT", "Cliente", "Sede", "Detalle de cambios"], rows, [1.2, 1.1, 0.9, 1.3, 1.1, 2.4]);
       } else {
         drawHeader("Técnicos · Horas de Trabajo");
         sectionTitle("4. Técnicos · Horas de Trabajo");
@@ -673,6 +1154,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
       case "servicios": return serviciosExportRows;
       case "finanzas": return finanzasRows;
       case "tecnicos": return tecnicosRows;
+      case "bitacora": return bitacoraRows;
       default: return operacionRows;
     }
   }
@@ -688,7 +1170,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
             <p className="text-cyan-400 text-[10px] font-mono font-bold tracking-[0.25em] uppercase mb-1">Panel de Control · Solo Admin</p>
             <h1 className="font-display font-black text-2xl sm:text-3xl tracking-tight">Consola Litio Energy</h1>
             <p className="text-slate-400 text-xs mt-2 max-w-lg leading-relaxed">
-              Operación en vivo, finanzas, servicios, clientes y técnicos en una sola vista. Todo exportable a PDF y Excel.
+              Finanzas, servicios, clientes y técnicos en una sola vista. Todo exportable a PDF y Excel.
             </p>
           </div>
           <div className="flex space-x-2 print:hidden">
@@ -702,10 +1184,27 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
                   <Printer className="w-3.5 h-3.5" /> {pdfGenerando ? "Generando…" : "PDF"}
                 </button>
                 <button
-                  onClick={() => exportExcel(currentExportRows(), `reporte_${view}`)}
+                  onClick={async () => {
+                    if (view === "clientes") {
+                      const filt = preset !== "todo" ? { from: range.from, to: range.to } : null;
+                      const all = clientesAll || (await loadAllClientesForExport(filt));
+                      const rows: unknown[][] = [
+                        ["ID", "Nombre", "DNI", "Teléfono", "Tipo de Vehículo", "Última actualización"],
+                        ...all.slice().sort((a, b) => String(a.internalId || "").localeCompare(String(b.internalId || ""), "en", { numeric: true })).map((c) => [
+                          c.internalId || c.id || "—", c.name || "", c.dni || "", c.phone || "",
+                          [c.vehicleType, c.vehicleBrand, c.vehicleModel].filter(Boolean).join(" ") || "—",
+                          c.updatedAt ? fmtFechaHora(new Date(c.updatedAt).getTime()) : (c.createdAt ? fmtFechaHora(new Date(Number(c.createdAt)).getTime()) : "—")
+                        ])
+                      ];
+                      if (all.length) setClientesAll(all);
+                      exportExcel(rows, "reporte_clientes");
+                    } else {
+                      exportExcel(currentExportRows(), `reporte_${view}`);
+                    }
+                  }}
                   className="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-black transition-all"
                 >
-                  <FileSpreadsheet className="w-3.5 h-3.5" /> Excel
+                  <FileSpreadsheet className="w-3.5 h-3.5" /> {clientesExporting ? "Cargando…" : "Excel"}
                 </button>
               </>
             )}
@@ -736,18 +1235,16 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
               ))}
             </div>
             <div className="flex items-center gap-1.5 pl-2 border-l border-slate-700">
-              <input
-                type="date"
+              <CalendarPicker
                 value={customFrom}
-                onChange={(e) => { setCustomFrom(e.target.value); setPreset("custom"); }}
-                className="px-2 py-1.5 bg-slate-950 text-slate-200 text-xs border border-slate-800 rounded-lg focus:outline-none focus:border-cyan-500/50"
+                onChange={(v) => { setCustomFrom(v); setPreset("custom"); }}
+                placeholder="Desde"
               />
               <span className="text-slate-500 text-xs">→</span>
-              <input
-                type="date"
+              <CalendarPicker
                 value={customTo}
-                onChange={(e) => { setCustomTo(e.target.value); setPreset("custom"); }}
-                className="px-2 py-1.5 bg-slate-950 text-slate-200 text-xs border border-slate-800 rounded-lg focus:outline-none focus:border-cyan-500/50"
+                onChange={(v) => { setCustomTo(v); setPreset("custom"); }}
+                placeholder="Hasta"
               />
               <button
                 onClick={() => setPreset("custom")}
@@ -788,52 +1285,6 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
           </div>
         </div>
       </div>
-
-      {/* KPIs GENERALES */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-        <KpiSmall label="Activas" value={kpis.activas} sub="En el taller" icon={Activity} color="cyan" />
-        <KpiSmall label="En Espera" value={kpis.enEspera} sub="Sin técnico" icon={Clock} color="rose" />
-        <KpiSmall label="En Trabajo" value={kpis.enTrabajo} sub="Presup./Repar." icon={Wrench} color="blue" />
-        <KpiSmall label="Listos" value={kpis.listos} sub="Para entrega" icon={CheckCircle2} color="teal" />
-        <KpiSmall label="Alertas" value={kpis.alertas} sub="Sobre la meta" icon={AlertCircle} color={kpis.alertas ? "red" : "emerald"} />
-        <KpiSmall label="Entregados" value={kpis.entregadas} sub={`Ticket ${fmtMoney(kpis.ticket)}`} icon={TrendingUp} color="emerald" />
-        <KpiSmall label="Ingresos Taller" value={fmtMoney(kpis.ingresosOT)} sub="OT entregadas" icon={CircleDollarSign} color="purple" />
-        <KpiSmall label="Express" value={fmtMoney(kpis.ingresosEx)} sub="Recibos express" icon={Zap} color="amber" />
-        <KpiSmall label="Ingresos Totales" value={fmtMoney(kpis.total)} sub="Taller + Express" icon={Receipt} color="pink" />
-        <KpiSmall label="Clientes" value={clientesOk ? kpis.clientes : "…"} sub="Registrados" icon={Users} color="orange" />
-        <KpiSmall label="Técnicos" value={kpis.tecnicos} sub="Con actividad" icon={GraduationCap} color="slate" />
-        <KpiSmall label="Rango" value={fmtFecha(range.from > 0 ? range.from : Date.now())} sub={`→ ${fmtFecha(range.to)}`} icon={CalendarRange} color="cyan" />
-      </div>
-
-      {/* ALERTAS DE TIEMPO */}
-      {alerts.length > 0 && (
-        <div className="bg-rose-950/40 border border-rose-800/60 rounded-2xl shadow-xl overflow-hidden">
-          <div className="p-3 px-4 border-b border-rose-800/50 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-400" />
-            <span className="text-xs font-black text-rose-200 uppercase tracking-wider">Tiempos vencidos</span>
-            <span className="ml-auto text-[10px] font-mono text-rose-300/80">{alerts.length} alertas · por retraso</span>
-          </div>
-          <div className="p-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-            {alerts.slice(0, 9).map((a) => (
-              <div key={a.repair.id} className="bg-slate-950/60 rounded-xl border border-rose-900/40 px-3 py-2 flex items-center gap-3">
-                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-bold text-slate-100 truncate">
-                    {a.repair.client?.name || "Sin nombre"}
-                    <span className="text-slate-500 font-mono ml-1.5">#{a.repair.id.slice(0, 6)}</span>
-                  </p>
-                  <p className="text-[9px] text-rose-300/80 font-medium truncate">
-                    {a.repair.vehicle?.type || "vehículo"} · {STAGE_LABELS[a.stage] || a.stage}
-                  </p>
-                </div>
-                <div className="text-right shrink-0">
-                  <p className={`font-mono font-black text-sm ${a.level === "critical" ? "text-rose-400" : "text-amber-400"}`}>{fmtDuration(a.elapsedMs)}</p>
-                  <p className="text-[9px] text-slate-500 font-mono">meta {fmtDuration(a.goalMs)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* LAYOUT: SIDEBAR + CONTENIDO */}
       <div className="grid lg:grid-cols-[230px_1fr] gap-5 items-start">
@@ -877,9 +1328,11 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
         <main className="min-w-0 space-y-5">
           {view === "dashboard" && (
             <DashboardView
+              kpis={kpis}
+              alerts={alerts}
+              clientesOk={clientesOk}
+              range={range}
               operacion={operacionStats}
-              liveRows={liveRows}
-              byStage={byStage}
               goals={goals}
               services={servicesSummary}
               porSede={porSede}
@@ -902,7 +1355,21 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
             />
           )}
           {view === "clientes" && (
-            <ClientesTab rows={clientesFiltered} q={q} setQ={setQ} loading={!clientesOk && clientes.length === 0} />
+            <ClientesTab
+              rows={clientesFiltered}
+              repairs={scopedRepairs}
+              express={scopedExpress}
+              q={q}
+              setQ={setQ}
+              loading={!clientesOk && clientesLoading}
+              total={clientesFilteredTotal}
+              page={clientesPage}
+              totalPages={Math.max(1, Math.ceil((clientesFilteredTotal || clientesFiltered.length) / CLIENTES_PAGE_SIZE))}
+              onPageChange={loadClientesPage}
+              onSearch={searchClientes}
+              searchResult={clientesSearch}
+              scopeLabel={preset === "todo" ? "Todo el historial" : `${fmtFecha(range.from)} → ${fmtFecha(range.to)}`}
+            />
           )}
           {view === "servicios" && (
             <ServiciosTab rows={serviciosRows} total={servicesSummary.total} />
@@ -912,6 +1379,9 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
           )}
           {view === "tecnicos" && (
             <TecnicosTab rows={tecnicos} />
+          )}
+          {view === "bitacora" && (
+            <BitacoraTab rows={bitacoraRows} />
           )}
         </main>
       </div>
@@ -970,9 +1440,13 @@ function MiniBar({ value, max, color }: { value: number; max: number; color: str
 }
 
 // ── View: DASHBOARD (operación en vivo + tiempos + negocio) ──
-function DashboardView({ operacion, liveRows, byStage, goals, services, porSede, maxSede, trend, maxTrend, editingGoals, draftGoals, setEditingGoals, setDraftGoals, applyGoals, draftSet, filteredRepairs, technicianNames }: {
+function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, services, porSede, maxSede, trend, maxTrend, editingGoals, draftGoals, setEditingGoals, setDraftGoals, applyGoals, draftSet, filteredRepairs, technicianNames }: {
+  kpis: any;
+  alerts: any[];
+  clientesOk: boolean;
+  range: { from: number; to: number };
   operacion: { activas: number; enEspera: number; enTrabajo: number; listos: number; alertas: number };
-  liveRows: any[]; byStage: Record<string, any[]>; goals: Goals;
+  goals: Goals;
   services: { counts: Record<string, number>; total: number };
   porSede: Array<{ branch: string; label: string; taller: number; count: number; express: number }>;
   maxSede: number; trend: Array<{ key: string; label: string; revenue: number }>; maxTrend: number;
@@ -980,12 +1454,6 @@ function DashboardView({ operacion, liveRows, byStage, goals, services, porSede,
   setDraftGoals: (g: Goals) => void; applyGoals: () => void; draftSet: (k: string, h: string) => void;
   filteredRepairs: RepairItem[]; technicianNames: Set<string>;
 }) {
-  const nivelStyle: Record<string, { text: string; bar: string; glow: string }> = {
-    ok: { text: "text-slate-200", bar: "bg-slate-600", glow: "" },
-    warn: { text: "text-amber-400", bar: "bg-amber-500", glow: "shadow-[0_0_12px_rgba(245,158,11,0.3)]" },
-    critical: { text: "text-rose-400", bar: "bg-rose-500", glow: "shadow-[0_0_12px_rgba(244,63,94,0.4)]" }
-  };
-
   const processData = useMemo(() => {
     const HOUR90 = 90 * 24 * 3600 * 1000;
     const byStage: Record<string, number[]> = {};
@@ -1011,6 +1479,52 @@ function DashboardView({ operacion, liveRows, byStage, goals, services, porSede,
 
   return (
     <div className="space-y-5">
+      {/* KPIs GENERALES */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+        <KpiSmall label="Activas" value={kpis.activas} sub="En el taller" icon={Activity} color="cyan" />
+        <KpiSmall label="En Espera" value={kpis.enEspera} sub="Sin técnico" icon={Clock} color="rose" />
+        <KpiSmall label="En Trabajo" value={kpis.enTrabajo} sub="Presup./Repar." icon={Wrench} color="blue" />
+        <KpiSmall label="Listos" value={kpis.listos} sub="Para entrega" icon={CheckCircle2} color="teal" />
+        <KpiSmall label="Alertas" value={kpis.alertas} sub="Sobre la meta" icon={AlertCircle} color={kpis.alertas ? "red" : "emerald"} />
+        <KpiSmall label="Entregados" value={kpis.entregadas} sub={`Ticket ${fmtMoney(kpis.ticket)}`} icon={TrendingUp} color="emerald" />
+        <KpiSmall label="Ingresos Taller" value={fmtMoney(kpis.ingresosOT)} sub="OT entregadas" icon={CircleDollarSign} color="purple" />
+        <KpiSmall label="Express" value={fmtMoney(kpis.ingresosEx)} sub="Recibos express" icon={Zap} color="amber" />
+        <KpiSmall label="Ingresos Totales" value={fmtMoney(kpis.total)} sub="Taller + Express" icon={Receipt} color="pink" />
+        <KpiSmall label="Clientes" value={clientesOk ? kpis.clientes : "…"} sub="Registrados" icon={Users} color="orange" />
+        <KpiSmall label="Técnicos" value={kpis.tecnicos} sub="Con actividad" icon={GraduationCap} color="slate" />
+        <KpiSmall label="Rango" value={fmtFecha(range.from > 0 ? range.from : Date.now())} sub={`→ ${fmtFecha(range.to)}`} icon={CalendarRange} color="cyan" />
+      </div>
+
+      {/* ALERTAS DE TIEMPO */}
+      {alerts.length > 0 && (
+        <div className="bg-rose-950/40 border border-rose-800/60 rounded-2xl shadow-xl overflow-hidden">
+          <div className="p-3 px-4 border-b border-rose-800/50 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400" />
+            <span className="text-xs font-black text-rose-200 uppercase tracking-wider">Tiempos vencidos</span>
+            <span className="ml-auto text-[10px] font-mono text-rose-300/80">{alerts.length} alertas · por retraso</span>
+          </div>
+          <div className="p-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+            {alerts.slice(0, 9).map((a) => (
+              <div key={a.repair.id} className="bg-slate-950/60 rounded-xl border border-rose-900/40 px-3 py-2 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] font-bold text-slate-100 truncate">
+                    {a.repair.client?.name || "Sin nombre"}
+                    <span className="text-slate-500 font-mono ml-1.5">#{a.repair.id.slice(0, 6)}</span>
+                  </p>
+                  <p className="text-[9px] text-rose-300/80 font-medium truncate">
+                    {a.repair.vehicle?.type || "vehículo"} · {STAGE_LABELS[a.stage] || a.stage}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className={`font-mono font-black text-sm ${a.level === "critical" ? "text-rose-400" : "text-amber-400"}`}>{fmtDuration(a.elapsedMs)}</p>
+                  <p className="text-[9px] text-slate-500 font-mono">meta {fmtDuration(a.goalMs)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Metas por Etapa (semáforo) + Tiempos por Proceso */}
       <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl overflow-hidden">
         <div className="p-4 border-b border-slate-800 flex items-center justify-between gap-2">
@@ -1044,7 +1558,7 @@ function DashboardView({ operacion, liveRows, byStage, goals, services, porSede,
           )}
         </div>
         <div className="p-4 text-[11px] text-slate-500 leading-relaxed border-b border-slate-800/60">
-          Promedio real de cada etapa vs tu meta (semáforo verde / ámbar / rojo). Ajusta las metas para activarlo en la operación en vivo.
+          Promedio real de cada etapa vs tu meta (semáforo verde / ámbar / rojo). Ajusta las metas para activarlo.
         </div>
         {!editingGoals ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 p-4">
@@ -1117,69 +1631,6 @@ function DashboardView({ operacion, liveRows, byStage, goals, services, porSede,
         )}
       </div>
 
-      {/* Operación en vivo por etapa */}
-      <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl overflow-hidden">
-        <div className="p-4 border-b border-slate-800 flex items-center gap-2">
-          <Activity className="w-4 h-4 text-cyan-400" />
-          <h2 className="font-display font-black text-sm text-slate-100 uppercase tracking-wider">Operación en Vivo</h2>
-          <span className="ml-auto text-[10px] font-mono text-slate-500">{liveRows.length} órdenes activas · actualiza cada 30s</span>
-        </div>
-        <div className="p-4 grid grid-cols-1 md:grid-cols-3 xl:grid-cols-3 gap-3">
-          {LIVE_STAGE_ORDER.map((stage) => {
-            const items = byStage[stage] || [];
-            const overCount = items.filter((i) => i.over).length;
-            const color = STAGE_COLOR[stage] || "cyan";
-            return (
-              <div key={stage} className="bg-slate-950/60 rounded-xl border border-slate-800/70 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={`w-2 h-2 rounded-full ${BAR_COLOR[color]}`}></span>
-                    <span className="text-[11px] font-black text-slate-200 uppercase tracking-wider truncate">{STAGE_LABELS[stage] || stage}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {overCount > 0 && (
-                      <span className="px-1.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[9px] font-black">
-                        {overCount} ⚠
-                      </span>
-                    )}
-                    <span className="px-1.5 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-slate-300 text-[9px] font-mono font-black">{items.length}</span>
-                  </div>
-                </div>
-                {items.length === 0 ? (
-                  <p className="text-[10px] text-slate-600 text-center py-3">Sin órdenes</p>
-                ) : (
-                  <div className="space-y-2">
-                    {items.slice(0, 3).map((r) => {
-                      const st = nivelStyle[r.level];
-                      const pct = r.goalMs > 0 ? Math.min((r.elapsedMs / r.goalMs) * 100, 100) : 0;
-                      return (
-                        <div key={r.repair.id} className={`bg-slate-900/60 rounded-lg border border-slate-800/70 p-2 ${r.over ? st.glow : ""}`}>
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-[11px] font-bold text-slate-100 truncate">{r.repair.client?.name || "Sin nombre"}</p>
-                            <span className={`font-mono font-black text-xs ${st.text}`}>{fmtDuration(r.elapsedMs)}</span>
-                          </div>
-                          <p className="text-[9px] text-slate-500 truncate">
-                            {r.repair.vehicle?.brand || ""} {r.repair.vehicle?.type || ""} · meta {fmtDuration(r.goalMs)}
-                          </p>
-                          <div className="mt-1">
-                            <div className="w-full bg-slate-950 h-1 rounded-full overflow-hidden">
-                              <div className={`${st.bar} h-full rounded-full transition-all`} style={{ width: `${pct}%` }}></div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {items.length > 3 && (
-                      <p className="text-[9px] text-slate-500 font-mono text-center">+{items.length - 3} más</p>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Servicios del período */}
       <Card>
         <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -1236,26 +1687,98 @@ function DashboardView({ operacion, liveRows, byStage, goals, services, porSede,
 }
 
 // ── View: CLIENTES ──
-function ClientesTab({ rows, q, setQ, loading }: {
-  rows: any[]; q: string; setQ: (v: string) => void; loading: boolean;
+function ClientesTab({ rows, repairs, express, q, setQ, loading, total, page, totalPages, onPageChange, onSearch, searchResult, scopeLabel }: {
+  rows: any[]; repairs: RepairItem[]; express: any[]; q: string; setQ: (v: string) => void; loading: boolean;
+  total: number; page: number; totalPages: number;
+  onPageChange: (p: number) => void; onSearch: (term: string) => void;
+  searchResult: null | { term: string; results: any[]; fromServer: boolean };
+  scopeLabel?: string;
 }) {
+  const [openDni, setOpenDni] = useState<string | null>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => onSearch(q), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
+
+  const pageIndex = Math.max(1, Math.min(page, totalPages));
+  const shownTotal = searchResult ? searchResult.results.length : total;
+  const visibleRows = rows;
+
+  const clientRepairs = (c: any): RepairItem[] => {
+    const dni = String(c.dni || "").trim().toLowerCase();
+    const phone = String(c.phone || "").trim().toLowerCase();
+    if (!dni && !phone) return [];
+    return repairs
+      .filter((r) =>
+        (dni && String(r.client?.dni || "").trim().toLowerCase() === dni) ||
+        (phone && String(r.client?.phone || "").trim().toLowerCase() === phone)
+      )
+      .sort((a, b) => new Date(b.receptionDate).getTime() - new Date(a.receptionDate).getTime());
+  };
+
+  // Recibos Express del cliente. Prioridad de enlace: internalId (nuevo),
+  // luego DNI y teléfonos (principal y phone2) para los registros antiguos.
+  const clientExpress = (c: any): any[] => {
+    const iid = String(c.internalId || "").trim();
+    const dni = String(c.dni || "").trim().toLowerCase();
+    const phones = [c.phone, c.phone2]
+      .map((p) => String(p || "").trim().toLowerCase())
+      .filter(Boolean);
+    if (!iid && !dni && !phones.length) return [];
+    return express
+      .filter((e) => e.annulled !== true)
+      .filter((e) =>
+        (iid && String(e.clientInternalId || "").trim() === iid) ||
+        (dni && String(e.clientDni || "").trim().toLowerCase() === dni) ||
+        (phones.length > 0 && phones.includes(String(e.clientPhone || "").trim().toLowerCase()))
+      )
+      .sort((a, b) => expressTs(b) - expressTs(a));
+  };
+
+  const openClient = rows.find((c) => (c.dni || c.id) === openDni);
+  const openOt = openClient ? clientRepairs(openClient) : [];
+  const openExpress = openClient ? clientExpress(openClient) : [];
+
   return (
     <Card className="print:border-0 print:shadow-none">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider flex items-center gap-2">
           <Users className="w-4 h-4 text-cyan-400" /> Lista de Clientes
-          <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-mono text-slate-300">{rows.length}</span>
+          <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-mono text-slate-300">{shownTotal}</span>
         </h2>
-        <div className="relative print:hidden">
-          <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Buscar por nombre, DNI, ID..."
-            className="w-full sm:w-64 pl-9 pr-3 py-2 bg-slate-950 text-slate-100 text-xs border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500/50"
-          />
+        {scopeLabel && !searchResult && (
+          <span className="text-[10px] font-mono text-cyan-400/80">{scopeLabel}</span>
+        )}
+        <div className="flex items-center gap-2 print:hidden">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Buscar por nombre, DNI, ID..."
+              className="w-full sm:w-64 pl-9 pr-3 py-2 bg-slate-950 text-slate-100 text-xs border border-slate-800 rounded-xl focus:outline-none focus:border-cyan-500/50"
+            />
+          </div>
+          {q && (
+            <button
+              type="button"
+              onClick={() => { setQ(""); onSearch(""); }}
+              className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-[10px] font-bold transition-colors cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
+      {searchResult && searchResult.term && (
+        <p className="text-[11px] text-slate-500 mb-4">
+          {searchResult.results.length > 0
+            ? `${searchResult.results.length} coincidencia${searchResult.results.length === 1 ? "" : "s"} para "${q}" (búsqueda en el servidor por prefijo de ID, DNI, teléfono o nombre).`
+            : `Sin coincidencias para "${q}" en el servidor.`}
+        </p>
+      )}
       {loading ? (
         <p className="text-sm text-slate-500 py-8 text-center">Cargando clientes…</p>
       ) : rows.length === 0 ? (
@@ -1270,13 +1793,17 @@ function ClientesTab({ rows, q, setQ, loading }: {
                 <th className="py-2 pr-3">DNI</th>
                 <th className="py-2 pr-3">Teléfono</th>
                 <th className="py-2 pr-3">Tipo de Vehículo</th>
-                <th className="py-2">Últ. actualización</th>
+                <th className="py-2 pr-3">Últ. actualización</th>
+                <th className="py-2 text-right print:hidden">OT</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((c, i) => {
+              {visibleRows.map((c, i) => {
                 const updated = c.updatedAt ? fmtFechaHora(new Date(c.updatedAt).getTime()) : c.createdAt ? fmtFechaHora(new Date(Number(c.createdAt)).getTime()) : "—";
                 const vehicle = [c.vehicleType, c.vehicleBrand, c.vehicleModel].filter(Boolean).join(" ") || "—";
+                const dniKey = c.dni || c.id || `idx-${i}`;
+                const otCount = clientRepairs(c).length;
+                const expCount = clientExpress(c).length;
                 return (
                   <tr key={i} className="border-b border-slate-800/70 hover:bg-slate-800/30">
                     <td className="py-2.5 pr-3 font-mono font-bold text-cyan-300">{c.internalId || c.id || "—"}</td>
@@ -1289,11 +1816,194 @@ function ClientesTab({ rows, q, setQ, loading }: {
                       </span>
                     </td>
                     <td className="py-2.5 text-slate-400">{updated}</td>
+                    <td className="py-2.5 text-right print:hidden">
+                      <button
+                        type="button"
+                        onClick={() => setOpenDni(dniKey)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-[10px] font-bold transition-colors cursor-pointer"
+                        title={`Ver historial de ${c.name || "este cliente"}`}
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        {otCount} OT{expCount > 0 ? ` · ${expCount} EXP` : ""}
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!searchResult && total > CLIENTES_PAGE_SIZE && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4 print:hidden">
+          <span className="text-[11px] font-mono text-slate-500">
+            Página {pageIndex} de {totalPages} · Mostrando {(pageIndex - 1) * CLIENTES_PAGE_SIZE + 1}–{Math.min(pageIndex * CLIENTES_PAGE_SIZE, total)} de {total} clientes
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              disabled={pageIndex === 1}
+              onClick={() => onPageChange(Math.max(1, pageIndex - 1))}
+              className="flex items-center gap-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-slate-300 rounded-xl text-[11px] font-bold transition-colors cursor-pointer disabled:cursor-default"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" /> Anterior
+            </button>
+            {getClientesPageNumbers(pageIndex, totalPages).map((p, i, arr) => (
+              <React.Fragment key={p}>
+                {i > 0 && p !== arr[i - 1] + 1 && <span className="px-0.5 text-slate-600 text-xs">…</span>}
+                <button
+                  type="button"
+                  onClick={() => onPageChange(p)}
+                  className={`w-8 h-8 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                    p === pageIndex
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                      : "bg-slate-800 hover:bg-slate-700 text-slate-400 border border-transparent"
+                  }`}
+                >
+                  {p}
+                </button>
+              </React.Fragment>
+            ))}
+            <button
+              type="button"
+              disabled={pageIndex === totalPages}
+              onClick={() => onPageChange(Math.min(totalPages, pageIndex + 1))}
+              className="flex items-center gap-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-slate-300 rounded-xl text-[11px] font-bold transition-colors cursor-pointer disabled:cursor-default"
+            >
+              Siguiente <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de órdenes del cliente */}
+      {openClient && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+          onClick={() => setOpenDni(null)}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[80vh] flex flex-col bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
+              <div>
+                <h3 className="font-black text-slate-100 text-sm uppercase tracking-wider flex items-center gap-2">
+                  <History className="w-4 h-4 text-cyan-400" /> Historial del Cliente
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5 capitalize">
+                  {openClient.name || "—"} <span className="font-mono text-slate-500">({openClient.dni || "sin DNI"})</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpenDni(null)}
+                className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="overflow-y-auto p-5 space-y-5">
+              <div>
+                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-2">
+                  Órdenes de Trabajo · {openOt.length}
+                </p>
+                {openOt.length === 0 ? (
+                  <p className="text-sm text-slate-500 text-center py-6">Sin órdenes registradas.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {openOt.map((r) => {
+                      const badge = {
+                        receptioned: "bg-slate-500/10 text-slate-300 border-slate-500/30",
+                        diagnosing: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+                        quoted: "bg-cyan-500/10 text-cyan-300 border-cyan-500/30",
+                        paid: "bg-blue-500/10 text-blue-300 border-blue-500/30",
+                        repairing: "bg-violet-500/10 text-violet-300 border-violet-500/30",
+                        testing: "bg-purple-500/10 text-purple-300 border-purple-500/30",
+                        ready: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+                        delivered: "bg-emerald-500/15 text-emerald-400 border-emerald-500/40",
+                        cancelled: "bg-rose-500/10 text-rose-300 border-rose-500/30"
+                      }[r.status] || "bg-slate-500/10 text-slate-300 border-slate-500/30";
+                      const label = {
+                        receptioned: "Recibido", diagnosing: "Diagnóstico", quoted: "Presupuesto",
+                        paid: "Pagado", repairing: "Reparando", testing: "Control Calidad",
+                        ready: "Listo", delivered: "Entregado", cancelled: "Cancelado"
+                      }[r.status] || r.status;
+                      const venue = BRANCH_LABELS[r.workshopBranch || "lince_arenales"] || r.workshopBranch || "—";
+                      return (
+                        <div key={r.id} className="bg-slate-950 rounded-xl border border-slate-800 p-3.5 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono font-black text-cyan-300">{r.id}</span>
+                              <span className={`px-2 py-0.5 rounded-full border text-[9px] font-bold ${badge}`}>{label}</span>
+                              <span className="text-slate-400">{venue}</span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-1">
+                              {r.vehicle?.type || "otro"} {r.vehicle?.brand || ""} {r.vehicle?.model || ""}
+                            </p>
+                            <p className="text-[10px] font-mono text-slate-500 mt-0.5">
+                              Ingreso: {fmtFechaHora(new Date(r.receptionDate).getTime())}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => generateRepairPdf(r)}
+                            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 bg-cyan-950/40 hover:bg-cyan-900/40 text-cyan-400 hover:text-cyan-300 rounded-xl border border-cyan-900/60 hover:border-cyan-500/50 transition-all font-bold font-mono text-xs cursor-pointer"
+                            title={`Imprimir Ficha PDF de ${r.id}`}
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            Ficha PDF
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-2">
+                  Recibos Express · {openExpress.length}
+                </p>
+                {openExpress.length === 0 ? (
+                  <p className="text-sm text-slate-500 text-center py-6">Sin recibos Express registrados.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {openExpress.map((e) => (
+                      <div key={e.correlative} className="bg-slate-950 rounded-xl border border-slate-800 p-3.5 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-black text-emerald-300">{e.correlative}</span>
+                            <span className="px-2 py-0.5 rounded-full border text-[9px] font-bold bg-emerald-500/10 text-emerald-300 border-emerald-500/30">Express</span>
+                            <span className="text-slate-400">{BRANCH_LABELS[e.localKey] || e.localName || e.localKey || "—"}</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-1">
+                            {(e.items || []).length} servicio{(e.items || []).length === 1 ? "" : "s"} · {e.vehicleType || "—"}
+                          </p>
+                          <p className="text-[10px] font-mono text-slate-500 mt-0.5">
+                            {e.date || (isFinite(expressTs(e)) ? fmtFechaHora(expressTs(e)) : "—")}
+                          </p>
+                        </div>
+                        <div className="shrink-0 flex items-center gap-2">
+                          <span className="font-mono font-bold text-slate-200">{fmtMoney(Number(e.total) || 0)}</span>
+                          <button
+                            type="button"
+                            onClick={() => openReceipt(e)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-950/40 hover:bg-emerald-900/40 text-emerald-400 hover:text-emerald-300 rounded-xl border border-emerald-900/60 hover:border-emerald-500/50 transition-all font-bold font-mono text-xs cursor-pointer"
+                            title={`Ver recibo ${e.correlative}`}
+                          >
+                            <Receipt className="w-3.5 h-3.5" />
+                            Recibo
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </Card>
@@ -1329,7 +2039,7 @@ function ServiciosTab({ rows, total }: { rows: any[][]; total: number }) {
             ))}
             <tr className="border-t border-slate-700">
               <td className="py-2.5 pr-3 font-black text-slate-100">Total</td>
-              {BRANCHES.map((j) => {
+              {BRANCHES.map((_, j) => {
                 const sum = rows.reduce((s, r) => s + (r[1] as number[])[j], 0);
                 return <td key={j} className="py-2.5 pr-3 text-right font-black font-mono text-slate-100">{sum}</td>;
               })}
@@ -1448,6 +2158,53 @@ function TecnicosTab({ rows }: { rows: any[] }) {
                   <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{t.ot}</td>
                   <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{t.express}</td>
                   <td className="py-2.5 text-right font-mono font-bold text-cyan-300">{fmtDuration(t.ms)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ── View: BITÁCORA DE CAMBIOS ──
+function BitacoraTab({ rows }: { rows: any[] }) {
+  return (
+    <Card className="print:border-0 print:shadow-none">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider flex items-center gap-2">
+          <History className="w-4 h-4 text-amber-400" /> Bitácora de Cambios · Ediciones de Recepción
+          <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-mono text-slate-300">{rows.length}</span>
+        </h2>
+      </div>
+      <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
+        Registro de quién (asesora), cuándo y qué datos de recepción editó en cada OT. Sirve para auditoría de cambios.
+      </p>
+      {rows.length === 0 ? (
+        <p className="text-sm text-slate-500 py-8 text-center">Sin ediciones de recepción en el período.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                <th className="py-2 pr-3">Fecha / Hora</th>
+                <th className="py-2 pr-3">Asesora</th>
+                <th className="py-2 pr-3">OT</th>
+                <th className="py-2 pr-3">Cliente</th>
+                <th className="py-2 pr-3">Sede</th>
+                <th className="py-2">Detalle de cambios</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((c, i) => (
+                <tr key={i} className="border-b border-slate-800/70 hover:bg-slate-800/30">
+                  <td className="py-2.5 pr-3 text-slate-400 whitespace-nowrap">{c[0]}</td>
+                  <td className="py-2.5 pr-3 font-bold text-amber-300 whitespace-nowrap">{c[1]}</td>
+                  <td className="py-2.5 pr-3 font-mono text-cyan-300 whitespace-nowrap">{c[2]}</td>
+                  <td className="py-2.5 pr-3 text-slate-100 capitalize">{c[3]}</td>
+                  <td className="py-2.5 pr-3 text-slate-300 whitespace-nowrap">{c[4]}</td>
+                  <td className="py-2.5 text-slate-200">{c[5]}</td>
                 </tr>
               ))}
             </tbody>
