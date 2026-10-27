@@ -316,12 +316,16 @@ function ReassignModal({ repair, tecnicos, current, saving, onSelect, onClose }:
   );
 }
 
+type StageKey = "espera" | "diagnostico" | "presupuestos" | "aprobados" | "reparacion";
+
 export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdateRepair }: ControlViewProps) {
   const config = siteConfig || loadConfig();
   const [reassignId, setReassignId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [viewMode, setViewMode] = useState<"etapas" | "clientes">("etapas");
   const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
+  // Filtro por etapa al tocar un contador; null = se ven todas las etapas.
+  const [stageFilter, setStageFilter] = useState<StageKey | null>(null);
 
   const localRepairs = userLocalKey
     ? repairs.filter((r) => r.workshopBranch === userLocalKey)
@@ -393,6 +397,15 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
     .filter((r) => r.status === "repairing" || r.status === "testing")
     .sort((a, b) => new Date(stageStart(a)).getTime() - new Date(stageStart(b)).getTime());
 
+  const stageCounters: Array<{ key: StageKey; label: string; count: number; cls: string; activeCls: string }> = [
+    { key: "espera", label: "en espera", count: espera.length, cls: "bg-cyan-500/10 border-cyan-500/25 text-cyan-300", activeCls: "bg-cyan-500 border-cyan-400 text-slate-950 shadow-[0_0_14px_rgba(6,182,212,0.35)]" },
+    { key: "diagnostico", label: "en diagnóstico", count: diagnostico.length, cls: "bg-purple-500/10 border-purple-500/25 text-purple-300", activeCls: "bg-purple-500 border-purple-400 text-slate-950 shadow-[0_0_14px_rgba(168,85,247,0.35)]" },
+    { key: "presupuestos", label: "por confirmar", count: presupuestos.length, cls: "bg-amber-500/10 border-amber-500/25 text-amber-300", activeCls: "bg-amber-500 border-amber-400 text-slate-950 shadow-[0_0_14px_rgba(245,158,11,0.35)]" },
+    { key: "aprobados", label: "por asignar", count: aprobados.length, cls: "bg-emerald-500/10 border-emerald-500/25 text-emerald-300", activeCls: "bg-emerald-500 border-emerald-400 text-slate-950 shadow-[0_0_14px_rgba(16,185,129,0.35)]" },
+    { key: "reparacion", label: "en reparación", count: reparacion.length, cls: "bg-blue-500/10 border-blue-500/25 text-blue-300", activeCls: "bg-blue-500 border-blue-400 text-slate-950 shadow-[0_0_14px_rgba(59,130,246,0.35)]" }
+  ];
+  const showStage = (key: StageKey) => stageFilter === null || stageFilter === key;
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -409,22 +422,35 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
             · El diagnóstico y la reparación los realizan los técnicos asignados.
           </p>
         </div>
-        <div className="flex items-center space-x-2">
-          <span className="px-2.5 py-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-300 text-[11px] font-black">
-            {espera.length} en espera
-          </span>
-          <span className="px-2.5 py-1.5 rounded-full bg-purple-500/10 border border-purple-500/25 text-purple-300 text-[11px] font-black">
-            {diagnostico.length} en diagnóstico
-          </span>
-          <span className="px-2.5 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px] font-black">
-            {presupuestos.length} por confirmar
-          </span>
-          <span className="px-2.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 text-[11px] font-black">
-            {aprobados.length} por asignar
-          </span>
-          <span className="px-2.5 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-300 text-[11px] font-black">
-            {reparacion.length} en reparación
-          </span>
+        <div className="flex flex-wrap items-center gap-2">
+          {stageCounters.map((c) => {
+            const active = stageFilter === c.key;
+            return (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => {
+                  setViewMode("etapas");
+                  setStageFilter(active ? null : c.key);
+                }}
+                title={active ? "Ver todas las etapas" : `Ver solo: ${c.label}`}
+                className={`px-2.5 py-1.5 rounded-full border text-[11px] font-black transition-all ${
+                  active ? c.activeCls : `${c.cls} hover:brightness-125`
+                }`}
+              >
+                {c.count} {c.label}
+              </button>
+            );
+          })}
+          {stageFilter && (
+            <button
+              type="button"
+              onClick={() => setStageFilter(null)}
+              className="px-2.5 py-1.5 rounded-full border border-slate-700 bg-slate-900 text-slate-300 hover:text-white text-[11px] font-black"
+            >
+              Ver todos
+            </button>
+          )}
         </div>
       </div>
 
@@ -459,6 +485,7 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
 
       {viewMode === "etapas" ? (
       <>
+      {showStage("espera") && (
       <SummaryCard
         icon={Clock}
         title="En Espera"
@@ -469,7 +496,9 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
         empty="No hay vehículos en espera de derivación."
         onReassign={(r) => setReassignId(r.id)}
       />
+      )}
 
+      {showStage("diagnostico") && (
       <SummaryCard
         icon={Wrench}
         title="En Diagnóstico"
@@ -480,7 +509,9 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
         empty="No hay vehículos en etapa de diagnóstico. Los clientes ingresados se derivan al técnico desde 'Clientes en Espera'."
         onReassign={(r) => setReassignId(r.id)}
       />
+      )}
 
+      {showStage("presupuestos") && (
       <SummaryCard
         icon={FileText}
         title="Presupuesto Enviado · Por Confirmar Cliente"
@@ -491,7 +522,9 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
         empty="No hay presupuestos esperando confirmación del cliente."
         onReassign={(r) => setReassignId(r.id)}
       />
+      )}
 
+      {showStage("aprobados") && (
       <SummaryCard
         icon={Check}
         title="Presupuesto Aprobado · Por Asignar Técnico"
@@ -502,7 +535,9 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
         empty="No hay presupuestos aprobados pendientes de técnico."
         onReassign={(r) => setReassignId(r.id)}
       />
+      )}
 
+      {showStage("reparacion") && (
       <SummaryCard
         icon={Package}
         title="En Reparación"
@@ -513,6 +548,7 @@ export default function ControlView({ repairs, userLocalKey, siteConfig, onUpdat
         empty="No hay vehículos en reparación."
         onReassign={(r) => setReassignId(r.id)}
       />
+      )}
       </>
 
       ) : (
