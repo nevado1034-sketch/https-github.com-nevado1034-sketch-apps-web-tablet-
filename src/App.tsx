@@ -1003,7 +1003,7 @@ export default function App() {
             )}
 
             {currentTab === "clientes" && (
-              <ClientesView repairs={visibleRepairs} onUpdateRepair={handleUpdateRepair} userLocalKey={session.localKey} />
+              <ClientesView repairs={visibleRepairs} onUpdateRepair={handleUpdateRepair} userLocalKey={session.localKey} userName={session.name} />
             )}
 
             {currentTab === "chat" && (

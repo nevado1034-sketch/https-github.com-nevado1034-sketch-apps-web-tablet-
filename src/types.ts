@@ -149,6 +149,16 @@ export interface RepairItem {
   scheduledDeadline?: string; // Fecha/hora límite programada por la asesora de servicio
   serviceStartedAt?: string; // Fecha/hora en que inició el servicio
   workLog?: WorkLogEntry[]; // Crono manual del técnico: inicio / pausa / reanudar
+  pickupNotices?: PickupNotice[]; // Avisos de recojo enviados por WhatsApp (solo se agregan, nunca se borran)
+}
+
+// Aviso de recojo enviado al cliente por WhatsApp (Términos y Condiciones, punto 8).
+// El primer aviso marca el inicio del plazo de 10 días sin costo de almacenaje.
+export interface PickupNotice {
+  n: number; // 1 = primer aviso, 2+ = recordatorios
+  at: string; // ISO: momento en que la asesora confirmó el envío
+  by: string; // Quién lo envió
+  phone: string; // Número al que se envió
 }
 
 // Ítem del cronómetro manual de trabajo del técnico. No altera la métrica

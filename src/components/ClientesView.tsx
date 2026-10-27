@@ -14,8 +14,20 @@ import {
   MapPin,
   Ban,
   Receipt,
-  X
+  X,
+  MessageCircle,
+  BellRing
 } from "lucide-react";
+import {
+  STORAGE_FEE_PER_DAY,
+  buildPickupMessage,
+  fmtDate,
+  fmtSoles,
+  nextNotice,
+  pickupStatus,
+  sortedNotices,
+  whatsappPhone
+} from "../data/pickupNotice";
 import { RepairItem, RepairStatus } from "../types";
 import { generateRepairPdf } from "../utils/pdfGenerator";
 import { detectDocumentType, normalizeDocument } from "../data/documentValidator";
@@ -25,9 +37,52 @@ import { ReceiptPaper, printReceipt, openReceipt } from "./ExpressView";
 
 interface ClientesViewProps {
   repairs: RepairItem[];
-  onUpdateRepair?: (id: string, updateData: any) => Promise<void>;
+  onUpdateRepair?: (id: string, updateData: any) => Promise<any>;
   userLocalKey?: string;
+  userName?: string;
   searchRequired?: boolean;
+}
+
+// Resumen del aviso de recojo (punto 8): veces avisado, primer aviso y plazo.
+function PickupNoticeInfo({ r }: { r: RepairItem }) {
+  const st = pickupStatus(r);
+  const notices = sortedNotices(r);
+  if (st.count === 0) {
+    return r.status === "ready" ? (
+      <p className="text-[10px] font-bold text-amber-300/90 flex items-center gap-1">
+        <BellRing className="w-3 h-3" /> Sin aviso de recojo enviado · el plazo de 10 días aún no corre
+      </p>
+    ) : null;
+  }
+  const tone =
+    st.level === "plazo"
+      ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/5"
+      : st.level === "almacenaje"
+        ? "text-amber-300 border-amber-500/30 bg-amber-500/5"
+        : "text-rose-300 border-rose-500/35 bg-rose-500/5";
+  const isOpen = r.status === "ready";
+  return (
+    <div className={`mt-1 rounded-lg border px-2 py-1.5 text-[10px] space-y-0.5 ${tone}`}>
+      <p className="font-bold flex items-center gap-1 flex-wrap">
+        <MessageCircle className="w-3 h-3" />
+        Avisado {st.count} {st.count === 1 ? "vez" : "veces"} por WhatsApp · primer aviso {fmtDate(st.firstAt!)} · último {fmtDate(st.lastAt!)}
+      </p>
+      {isOpen && (
+        <p>
+          {st.level === "plazo"
+            ? st.daysLeftFree > 0
+              ? `Día ${st.daysSinceFirst} de 10 · quedan ${st.daysLeftFree} día(s) sin costo (hasta el ${fmtDate(st.freeUntil!)})`
+              : `Hoy es el último día sin costo (${fmtDate(st.freeUntil!)})`
+            : `Día ${st.daysSinceFirst} desde el primer aviso · almacenaje ${st.storageDays} día(s) × ${fmtSoles(STORAGE_FEE_PER_DAY)} = ${fmtSoles(st.storageFee)} (informativo)${
+                st.level === "abandono" ? " · superó los 60 días (abandono)" : st.level === "traslado" ? " · superó los 30 días (traslado)" : ""
+              }`}
+        </p>
+      )}
+      <p className="text-slate-400">
+        {notices.map((n) => `N°${n.n} ${fmtDate(new Date(n.at).getTime())} ${new Date(n.at).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" })} (${n.by})`).join(" · ")}
+      </p>
+    </div>
+  );
 }
 
 const STATUS_LABELS: Record<RepairStatus, string> = {
@@ -120,7 +175,55 @@ function buildGroups(repairs: RepairItem[]): ClientGroup[] {
   return groups;
 }
 
-export default function ClientesView({ repairs, onUpdateRepair, userLocalKey, searchRequired = false }: ClientesViewProps) {
+export default function ClientesView({ repairs, onUpdateRepair, userLocalKey, userName, searchRequired = false }: ClientesViewProps) {
+  // Aviso de recojo por WhatsApp pendiente de confirmar (solo se registra si se envió).
+  const [pendingNotice, setPendingNotice] = useState<{ repairId: string; message: string; phone: string } | null>(null);
+  const [savingNotice, setSavingNotice] = useState(false);
+
+  const openWhatsApp = (phone: string, message: string) => {
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, "_blank");
+  };
+
+  const startPickupNotice = (r: RepairItem) => {
+    const phone = whatsappPhone(r.client?.phone);
+    if (!phone) {
+      alert("El cliente no tiene celular registrado.");
+      return;
+    }
+    const message = buildPickupMessage(r, { termsUrl: `${window.location.origin}/terminos` });
+    openWhatsApp(phone, message);
+    setPendingNotice({ repairId: r.id, message, phone });
+  };
+
+  const confirmPickupNotice = async () => {
+    if (!pendingNotice || !onUpdateRepair) return;
+    const current = repairs.find((x) => x.id === pendingNotice.repairId);
+    if (!current) {
+      setPendingNotice(null);
+      return;
+    }
+    const by = (userName || "").trim() || "Asesora de Servicio";
+    const notice = nextNotice(current, by);
+    setSavingNotice(true);
+    try {
+      const ok = await onUpdateRepair(current.id, {
+        pickupNotices: [...(current.pickupNotices || []), notice],
+        extraHistoryLogs: [
+          {
+            id: `log_pickup_${Date.now()}`,
+            date: notice.at,
+            status: current.status,
+            description: `${notice.n === 1 ? "Primer aviso" : `Recordatorio N°${notice.n}`} de recojo enviado por WhatsApp al ${notice.phone || pendingNotice.phone} (Términos y Condiciones, punto 8).`,
+            user: by
+          }
+        ]
+      });
+      if (ok !== false) setPendingNotice(null);
+    } finally {
+      setSavingNotice(false);
+    }
+  };
+
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
   const [page, setPage] = useState(1);
@@ -434,6 +537,7 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey, se
                           <p className="text-[10px] text-slate-500">
                             {r.vehicle.reportedFailure || "Sin síntoma registrado"}
                           </p>
+                          <PickupNoticeInfo r={r} />
                         </div>
                         <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
                           <div className="text-right space-y-0.5">
@@ -454,6 +558,17 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey, se
                             <Printer className="w-3.5 h-3.5" />
                             <span className="hidden sm:inline">Ficha PDF</span>
                           </button>
+                          {r.status === "ready" && onUpdateRepair && (
+                            <button
+                              type="button"
+                              onClick={() => startPickupNotice(r)}
+                              className="flex items-center gap-1.5 px-3 py-2 bg-green-500/15 hover:bg-green-500/25 text-green-400 hover:text-green-300 rounded-xl border border-green-500/30 hover:border-green-400/50 transition-all font-bold text-xs cursor-pointer"
+                              title="Avisar por WhatsApp que el vehículo está listo para su recojo (punto 8 de los Términos)"
+                            >
+                              <MessageCircle className="w-3.5 h-3.5" />
+                              <span>{(r.pickupNotices || []).length === 0 ? "Avisar recojo" : `Reenviar aviso (N°${(r.pickupNotices || []).length + 1})`}</span>
+                            </button>
+                          )}
                           {r.status === "ready" && onUpdateRepair && (
                             <button
                               type="button"
@@ -629,6 +744,63 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey, se
             >
               Siguiente <ChevronRight className="w-3.5 h-3.5" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Confirmar envío del aviso de recojo por WhatsApp */}
+      {pendingNotice && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-green-800/60 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-4 border-b border-slate-800 flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-green-500/15 border border-green-500/30 text-green-400">
+                <MessageCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-slate-100 uppercase tracking-wider">¿Se envió el mensaje?</h3>
+                <p className="text-[11px] text-slate-500">
+                  Orden {pendingNotice.repairId} · WhatsApp +{pendingNotice.phone}
+                </p>
+              </div>
+            </div>
+            <div className="p-4 space-y-3">
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Se abrió WhatsApp con este mensaje. Solo se registra en la orden si confirmas que se envió.
+                {(repairs.find((x) => x.id === pendingNotice.repairId)?.pickupNotices || []).length === 0 &&
+                  " Al ser el primer aviso, desde hoy corre el plazo de 10 días del punto 8."}
+              </p>
+              <pre className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-200 bg-slate-950 border border-slate-800 rounded-xl p-3 max-h-64 overflow-y-auto font-sans">
+                {pendingNotice.message}
+              </pre>
+            </div>
+            <div className="p-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingNotice(null)}
+                disabled={savingNotice}
+                className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                No se envió
+              </button>
+              <button
+                type="button"
+                onClick={() => openWhatsApp(pendingNotice.phone, pendingNotice.message)}
+                disabled={savingNotice}
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-green-300 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                Abrir WhatsApp otra vez
+              </button>
+              <button
+                type="button"
+                onClick={confirmPickupNotice}
+                disabled={savingNotice}
+                className="flex items-center gap-1.5 px-4 py-2 bg-green-500 hover:bg-green-400 disabled:opacity-50 text-slate-950 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer"
+              >
+                <CheckCircle className="w-3.5 h-3.5" />
+                {savingNotice ? "Registrando..." : "Sí, se envió"}
+              </button>
+            </div>
           </div>
         </div>
       )}
