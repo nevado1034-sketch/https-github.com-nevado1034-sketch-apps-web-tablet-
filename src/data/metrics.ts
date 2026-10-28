@@ -381,11 +381,19 @@ export const STAGE_COLOR: Record<string, string> = {
 export interface MonthBucket {
   key: string;
   label: string;
+  /** Total del mes: taller + express. */
   revenue: number;
   count: number;
+  tallerRevenue: number;
+  expressRevenue: number;
 }
 
-export function monthlyTrend(orders: RepairItem[], months = 6, now = Date.now()): MonthBucket[] {
+export function monthlyTrend(
+  orders: RepairItem[],
+  months = 6,
+  now = Date.now(),
+  express: Array<{ ts: number; amount: number }> = []
+): MonthBucket[] {
   const buckets: MonthBucket[] = [];
   const d = new Date(now);
   d.setDate(1);
@@ -397,18 +405,31 @@ export function monthlyTrend(orders: RepairItem[], months = 6, now = Date.now())
       key: `${b.getFullYear()}-${String(b.getMonth() + 1).padStart(2, "0")}`,
       label: b.toLocaleString("es", { month: "short" }),
       revenue: 0,
-      count: 0
+      count: 0,
+      tallerRevenue: 0,
+      expressRevenue: 0
     });
   }
+  const keyOf = (m: Date) => `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, "0")}`;
   orders.forEach((r) => {
     if (r.status !== "delivered") return;
     const m = deliveryDate(r);
     if (!m) return;
-    const key = `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, "0")}`;
-    const bucket = buckets.find((b) => b.key === key);
+    const bucket = buckets.find((b) => b.key === keyOf(m));
     if (bucket) {
-      bucket.revenue += orderRevenue(r);
+      const amount = orderRevenue(r);
+      bucket.tallerRevenue += amount;
+      bucket.revenue += amount;
       bucket.count++;
+    }
+  });
+  express.forEach((e) => {
+    if (!isFinite(e.ts)) return;
+    const bucket = buckets.find((b) => b.key === keyOf(new Date(e.ts)));
+    if (bucket) {
+      const amount = Number(e.amount) || 0;
+      bucket.expressRevenue += amount;
+      bucket.revenue += amount;
     }
   });
   return buckets;

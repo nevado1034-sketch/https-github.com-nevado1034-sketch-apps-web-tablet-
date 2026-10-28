@@ -11,6 +11,7 @@ import { jsPDF } from "jspdf";
 import { RepairItem } from "../types";
 import { db, isFirebaseConfigured, collection, query as fbQuery, where, orderBy as fbOrderBy, limit as fbLimit, startAfter, getDocs, getCountFromServer } from "../firebase";
 import { loadConfig } from "../auth";
+import { buildTechnicianStats, isActiveOrder, paymentMethodOf, UNREGISTERED_METHOD } from "../data/adminMetrics";
 import { generateRepairPdf } from "../utils/pdfGenerator";
 import { openReceipt } from "./ExpressView";
 import {
@@ -581,8 +582,9 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     () => repairs.filter((r) => sede === "__all__" || r.workshopBranch === sede),
     [repairs, sede]
   );
+  // Los recibos Express anulados no cuentan como ingreso ni como servicio.
   const scopedExpress = useMemo(
-    () => expressReceipts.filter((e) => sede === "__all__" || e.localKey === sede),
+    () => expressReceipts.filter((e) => e.annulled !== true && (sede === "__all__" || e.localKey === sede)),
     [expressReceipts, sede]
   );
 
@@ -642,7 +644,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
   const liveRows = useMemo(() => {
     const out: any[] = [];
     scopedRepairs.forEach((r) => {
-      if (r.status === "delivered") return;
+      if (!isActiveOrder(r)) return;
       const live = currentLiveStage(r, now);
       if (!live) return;
       const goalMs = goals[live.stage] || 0;
@@ -666,7 +668,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
   }, [liveRows]);
 
   const operacionStats = useMemo(() => {
-    const activas = scopedRepairs.filter((r) => r.status !== "delivered").length;
+    const activas = scopedRepairs.filter(isActiveOrder).length;
     const enEspera = byStage["espera"]?.length || 0;
     const enTrabajo = (byStage["repairing"]?.length || 0) + (byStage["testing"]?.length || 0) + (byStage["diagnosing"]?.length || 0) + (byStage["quoted"]?.length || 0) + (byStage["paid"]?.length || 0);
     const listos = byStage["ready"]?.length || 0;
@@ -767,49 +769,16 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
   }, [scopedRepairs, scopedExpress, range]);
 
   // ── TÉCNICOS ──
-  const tecnicos = useMemo(() => {
-    const cfg = loadConfig();
-    const map: Record<string, { name: string; sede: string }> = {};
-    const jefas = new Set<string>();
-    (cfg?.locales || []).forEach((l: any) => {
-      if (l?.jefa?.name) jefas.add(String(l.jefa.name).trim().toLowerCase());
-      (l?.tecnicos || []).forEach((t: any) => {
-        map[String(t?.name || "").trim().toLowerCase()] = { name: String(t?.name || "").trim(), sede: l.key };
-      });
-    });
-    const agg: Record<string, { name: string; sede: string; ot: number; express: number; ms: number }> = {};
-    const upsert = (raw: string, sedeHint: string) => {
-      const n = String(raw || "").replace(/^T[eé]c\.\s*/i, "").trim();
-      if (!n) return null;
-      const key = n.toLowerCase();
-      if (jefas.has(key)) return null;
-      const found = map[key] ||
-        (/(carlos yucra|erick urbano|luis soto|jose rivero)/i.test(key) ? { name: n, sede: "lince_arenales" } :
-        /^(elmer|cristian ojeda|diego|fernando luque)/i.test(key) ? { name: n, sede: "surco" } :
-        /^(jesus)$/i.test(key) ? { name: n, sede: "san_borja" } :
-        /^(cristian)$/i.test(key) ? { name: n, sede: "lince_leal" } : null);
-      if (!agg[key]) agg[key] = { name: found ? found.name : n, sede: found ? found.sede : sedeHint, ot: 0, express: 0, ms: 0 };
-      return agg[key];
-    };
-    scopedRepairs.forEach((r) => {
-      const t = tsOf(r.deliveredAt || r.receptionDate);
-      if (!inRange(t, range)) return;
-      const a = upsert(r.technicianName || r.assignedTech || r.diagnosisTech || "", r.workshopBranch);
-      if (!a) return;
-      a.ot++;
-      const start = tsOf(r.serviceStartedAt || r.receptionDate);
-      const end = tsOf(r.deliveredAt);
-      if (isFinite(start) && isFinite(end) && end > start) a.ms += end - start;
-    });
-    scopedExpress.forEach((e) => {
-      const t = expressTs(e);
-      if (!inRange(t, range)) return;
-      const a = upsert(e.technicianName || "", e.localKey);
-      if (!a) return;
-      a.express++;
-    });
-    return Object.values(agg).sort((a, b) => b.ms - a.ms);
-  }, [scopedRepairs, scopedExpress, range]);
+  // Horas = tiempo NETO del cronómetro del técnico; sede según la configuración de accesos.
+  const tecnicos = useMemo(
+    () =>
+      buildTechnicianStats(
+        scopedRepairs,
+        scopedExpress.map((e) => ({ technicianName: e.technicianName, localKey: e.localKey, ts: expressTs(e) })),
+        { range, config: loadConfig(), orderTs: (r) => tsOf(r.deliveredAt || r.receptionDate) }
+      ),
+    [scopedRepairs, scopedExpress, range]
+  );
 
   // ── FINANZAS ──
   const finanzas = useMemo(() => {
@@ -819,14 +788,14 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
         const t = tsOf(r.deliveredAt || r.receptionDate);
         return {
           fecha: t, tipo: r.serviceType, cliente: r.client?.name || "", id: r.id,
-          sede: r.workshopBranch, metodo: r.payment?.paymentMethod || "efectivo", monto: r.actualCost || r.estimatedCost || 0, origen: "OT"
+          sede: r.workshopBranch, metodo: paymentMethodOf(r.payment?.paymentMethod), monto: r.actualCost || r.estimatedCost || 0, origen: "OT"
         };
       })
       .filter((x) => inRange(x.fecha, range));
     const exRows = scopedExpress
       .map((e) => ({
         fecha: expressTs(e), tipo: "express", cliente: e.clientName || "",
-        id: e.correlative || e.id || "", sede: e.localKey, metodo: e.paymentMethod || "efectivo",
+        id: e.correlative || e.id || "", sede: e.localKey, metodo: paymentMethodOf(e.paymentMethod),
         monto: Number(e.total || 0), origen: "Express"
       }))
       .filter((x) => inRange(x.fecha, range));
@@ -839,8 +808,8 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
 
   const finanzasByMethod = useMemo(() => {
     const map: Record<string, number> = {};
-    finanzas.all.forEach((r: any) => { map[r.metodo || "efectivo"] = (map[r.metodo || "efectivo"] || 0) + r.monto; });
-    const order: Record<string, number> = { efectivo: 0, transferencia: 1, yape_plin: 2, tarjeta: 3 };
+    finanzas.all.forEach((r: any) => { const m = paymentMethodOf(r.metodo); map[m] = (map[m] || 0) + r.monto; });
+    const order: Record<string, number> = { efectivo: 0, transferencia: 1, yape_plin: 2, tarjeta: 3, [UNREGISTERED_METHOD]: 98 };
     return Object.entries(map)
       .map(([m, v]) => [m, v] as [string, number])
       .sort((a, b) => (order[a[0]] ?? 99) - (order[b[0]] ?? 99) || b[1] - a[1])
@@ -863,8 +832,14 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
   const maxSede = Math.max(...porSede.map((r) => r.taller + r.express), 1);
 
   const trend = useMemo(
-    () => monthlyTrend(sede === "__all__" ? repairs : scopedRepairs),
-    [repairs, scopedRepairs, sede]
+    () =>
+      monthlyTrend(
+        sede === "__all__" ? repairs : scopedRepairs,
+        6,
+        Date.now(),
+        scopedExpress.map((e) => ({ ts: expressTs(e), amount: Number(e.total || 0) }))
+      ),
+    [repairs, scopedRepairs, scopedExpress, sede]
   );
   const maxTrend = Math.max(...trend.map((t) => t.revenue), 1);
 
@@ -911,8 +886,8 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     ...finanzas.all.map((r) => [fmtFecha(r.fecha), r.origen, SERVICE_LABELS[r.tipo] || r.tipo, r.id, r.cliente, BRANCH_LABELS[r.sede] || r.sede, `S/ ${Math.round(r.monto).toLocaleString()}`])
   ];
   const tecnicosRows: unknown[][] = [
-    ["Técnico", "Sede", "Órdenes Atendidas", "Express", "Horas de Trabajo"],
-    ...tecnicos.map((t) => [t.name, BRANCH_LABELS[t.sede] || t.sede || "—", t.ot, t.express, fmtDuration(t.ms)])
+    ["Técnico", "Sede", "Órdenes", "Terminadas", "Express", "Con cronómetro", "Horas netas (cronómetro)"],
+    ...tecnicos.map((t) => [t.name, BRANCH_LABELS[t.sede] || t.sede || "—", t.ot, t.terminadas, t.express, `${t.conCronometro}/${t.ot}`, fmtDuration(t.netMs)])
   ];
   const operacionRows: unknown[][] = [
     ["Métrica", "Valor"],
@@ -1128,8 +1103,8 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
       } else {
         drawHeader("Técnicos · Horas de Trabajo");
         sectionTitle("4. Técnicos · Horas de Trabajo");
-        const rows = tecnicos.map((t) => [t.name, BRANCH_LABELS[t.sede] || t.sede || "—", t.ot, t.express, fmtDuration(t.ms)]);
-        drawTable(["Técnico", "Sede", "Órdenes Atendidas", "Express", "Horas de Trabajo"], rows, [1.5, 1.3, 1.1, 0.9, 1.2]);
+        const rows = tecnicos.map((t) => [t.name, BRANCH_LABELS[t.sede] || t.sede || "—", t.ot, t.terminadas, t.express, `${t.conCronometro}/${t.ot}`, fmtDuration(t.netMs)]);
+        drawTable(["Técnico", "Sede", "Órdenes", "Terminadas", "Express", "Con cronómetro", "Horas netas"], rows, [1.5, 1.2, 0.8, 0.9, 0.8, 1.0, 1.1]);
       }
 
       // footer
@@ -1669,7 +1644,7 @@ function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, serv
         </Card>
         <Card>
           <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-emerald-400" /> Ingresos · Últimos 6 meses
+            <TrendingUp className="w-4 h-4 text-emerald-400" /> Ingresos · Últimos 6 meses (Taller + Express)
           </h2>
           <div className="grid grid-cols-6 gap-2 items-end h-36">
             {trend.map((t) => (
@@ -2052,16 +2027,28 @@ function ServiciosTab({ rows, total }: { rows: any[][]; total: number }) {
   );
 }
 
+const METHOD_LABELS: Record<string, string> = {
+  efectivo: "Efectivo",
+  transferencia: "Transferencia",
+  yape_plin: "Yape / Plin",
+  tarjeta: "Tarjeta",
+  [UNREGISTERED_METHOD]: "Sin registrar"
+};
+
 // ── View: FINANZAS ──
 function FinanzasTab({ finanzas, byMethod }: { finanzas: any; byMethod: Array<[string, number]> }) {
   const maxMethod = Math.max(...byMethod.map(([, v]) => v), 1);
+  // Método con más ingresos (sin contar los pagos sin método registrado).
+  const topMethod = byMethod
+    .filter(([m]) => m !== UNREGISTERED_METHOD)
+    .reduce<[string, number] | null>((best, cur) => (!best || cur[1] > best[1] ? cur : best), null);
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <KpiSmall label="Ingresos OT" value={fmtMoney(finanzas.totalOT)} sub="Órdenes entregadas" icon={TrendingUp} color="emerald" />
         <KpiSmall label="Ingresos Express" value={fmtMoney(finanzas.totalEx)} sub="Recibos express" icon={Zap} color="rose" />
         <KpiSmall label="Total" value={fmtMoney(finanzas.total)} sub={`${finanzas.count} registros`} icon={CircleDollarSign} color="cyan" />
-        <KpiSmall label="Método principal" value={byMethod[0]?.[0] || "—"} sub={byMethod[0] ? fmtMoney(byMethod[0][1]) : ""} icon={Receipt} color="amber" />
+        <KpiSmall label="Método principal" value={topMethod ? METHOD_LABELS[topMethod[0]] || topMethod[0] : "—"} sub={topMethod ? fmtMoney(topMethod[1]) : ""} icon={Receipt} color="amber" />
       </div>
       <Card className="print:border-0 print:shadow-none">
         <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -2112,7 +2099,7 @@ function FinanzasTab({ finanzas, byMethod }: { finanzas: any; byMethod: Array<[s
           <div className="space-y-3">
             {byMethod.map(([m, v]) => (
               <div key={m} className="flex items-center gap-3">
-                <span className="w-28 shrink-0 text-[11px] font-bold text-slate-300 capitalize">{m}</span>
+                <span className="w-28 shrink-0 text-[11px] font-bold text-slate-300 capitalize">{METHOD_LABELS[m] || m}</span>
                 <div className="flex-1"><MiniBar value={v} max={maxMethod} color="cyan" /></div>
                 <span className="w-24 shrink-0 text-right text-[11px] font-mono font-black text-slate-200">{fmtMoney(v)}</span>
               </div>
@@ -2130,10 +2117,14 @@ function TecnicosTab({ rows }: { rows: any[] }) {
     <Card className="print:border-0 print:shadow-none">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider flex items-center gap-2">
-          <Clock className="w-4 h-4 text-cyan-400" /> Técnicos · Horas de Trabajo
+          <Clock className="w-4 h-4 text-cyan-400" /> Técnicos · Horas Netas de Trabajo
           <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-mono text-slate-300">{rows.length}</span>
         </h2>
       </div>
+      <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
+        Horas netas = tiempo del cronómetro de la Mesa de Trabajo, sin pausas ni esperas (presupuesto, pago, recojo).
+        Las órdenes sin cronómetro no suman horas.
+      </p>
       {rows.length === 0 ? (
         <p className="text-sm text-slate-500 py-8 text-center">Sin actividad de técnicos en el período.</p>
       ) : (
@@ -2143,9 +2134,11 @@ function TecnicosTab({ rows }: { rows: any[] }) {
               <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
                 <th className="py-2 pr-3">Técnico</th>
                 <th className="py-2 pr-3">Sede</th>
-                <th className="py-2 pr-3 text-right">Órdenes Atendidas</th>
+                <th className="py-2 pr-3 text-right">Órdenes</th>
+                <th className="py-2 pr-3 text-right">Terminadas</th>
                 <th className="py-2 pr-3 text-right">Express</th>
-                <th className="py-2 text-right">Horas de Trabajo</th>
+                <th className="py-2 pr-3 text-right">Con cronómetro</th>
+                <th className="py-2 text-right">Horas netas</th>
               </tr>
             </thead>
             <tbody>
@@ -2156,8 +2149,10 @@ function TecnicosTab({ rows }: { rows: any[] }) {
                     <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-bold text-slate-300">{BRANCH_LABELS[t.sede] || t.sede || "—"}</span>
                   </td>
                   <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{t.ot}</td>
+                  <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{t.terminadas}</td>
                   <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{t.express}</td>
-                  <td className="py-2.5 text-right font-mono font-bold text-cyan-300">{fmtDuration(t.ms)}</td>
+                  <td className={`py-2.5 pr-3 text-right font-mono ${t.conCronometro < t.ot ? "text-amber-300" : "text-slate-300"}`}>{t.conCronometro}/{t.ot}</td>
+                  <td className="py-2.5 text-right font-mono font-bold text-cyan-300">{t.conCronometro ? fmtDuration(t.netMs) : "—"}</td>
                 </tr>
               ))}
             </tbody>
