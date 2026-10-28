@@ -44,13 +44,6 @@ const SERVICE_LABELS: Record<string, string> = {
   cambio: "Cambio / Repuesto",
   express: "Servicio Express"
 };
-const SERVICE_COLORS: Record<string, string> = {
-  mantenimiento: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
-  diagnostico: "bg-purple-500/15 text-purple-300 border-purple-500/30",
-  garantia: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  cambio: "bg-blue-500/15 text-blue-300 border-blue-500/30",
-  express: "bg-rose-500/15 text-rose-300 border-rose-500/30"
-};
 
 const PRESETS: Array<{ key: RangePreset; label: string }> = [
   { key: "hoy", label: "Hoy" },
@@ -1428,7 +1421,7 @@ function MiniBar({ value, max, color }: { value: number; max: number; color: str
 }
 
 // ── View: DASHBOARD (operación en vivo + tiempos + negocio) ──
-function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, services, porSede, maxSede, trend, maxTrend, editingGoals, draftGoals, setEditingGoals, setDraftGoals, applyGoals, draftSet, filteredRepairs, technicianNames }: {
+function DashboardView({ kpis, alerts, clientesOk, operacion, goals, services, porSede, trend, editingGoals, draftGoals, setEditingGoals, setDraftGoals, applyGoals, draftSet, filteredRepairs, technicianNames }: {
   kpis: any;
   alerts: any[];
   clientesOk: boolean;
@@ -1442,6 +1435,19 @@ function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, serv
   setDraftGoals: (g: Goals) => void; applyGoals: () => void; draftSet: (k: string, h: string) => void;
   filteredRepairs: RepairItem[]; technicianNames: Set<string>;
 }) {
+  // "Tiempos vencidos" se muestra plegado por defecto para no alargar el panel.
+  const [showAlerts, setShowAlerts] = useState(false);
+  const criticalCount = alerts.filter((a) => a.level === "critical").length;
+  const worstAlert = alerts[0];
+  const activeTotal = Math.max(kpis.activas || 0, 1);
+  const liveCells = [
+    { label: "Activas", value: kpis.activas, sub: "en el taller", color: "text-cyan-300", bar: null as string | null },
+    { label: "En espera", value: kpis.enEspera, sub: "sin técnico", color: "text-rose-300", bar: "bg-rose-500" },
+    { label: "En trabajo", value: kpis.enTrabajo, sub: "diag. / presup. / repar.", color: "text-blue-300", bar: "bg-blue-500" },
+    { label: "Listos", value: kpis.listos, sub: "para entrega", color: "text-teal-300", bar: "bg-teal-500" },
+    { label: "Alertas", value: kpis.alertas, sub: "sobre la meta", color: kpis.alertas ? "text-red-400" : "text-emerald-300", bar: null }
+  ];
+
   const processData = useMemo(() => {
     const HOUR90 = 90 * 24 * 3600 * 1000;
     const byStage: Record<string, number[]> = {};
@@ -1467,40 +1473,101 @@ function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, serv
 
   return (
     <div className="space-y-5">
-      {/* KPIs GENERALES */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-        <KpiSmall label="Activas" value={kpis.activas} sub="En el taller" icon={Activity} color="cyan" />
-        <KpiSmall label="En Espera" value={kpis.enEspera} sub="Sin técnico" icon={Clock} color="rose" />
-        <KpiSmall label="En Trabajo" value={kpis.enTrabajo} sub="Presup./Repar." icon={Wrench} color="blue" />
-        <KpiSmall label="Listos" value={kpis.listos} sub="Para entrega" icon={CheckCircle2} color="teal" />
-        <KpiSmall label="Alertas" value={kpis.alertas} sub="Sobre la meta" icon={AlertCircle} color={kpis.alertas ? "red" : "emerald"} />
-        <KpiSmall label="Entregados" value={kpis.entregadas} sub={`Ticket ${fmtMoney(kpis.ticket)}`} icon={TrendingUp} color="emerald" />
-        <KpiSmall label="Ingresos Taller" value={fmtMoney(kpis.ingresosOT)} sub="OT entregadas" icon={CircleDollarSign} color="purple" />
-        <KpiSmall label="Express" value={fmtMoney(kpis.ingresosEx)} sub="Recibos express" icon={Zap} color="amber" />
-        <KpiSmall label="Ingresos Totales" value={fmtMoney(kpis.total)} sub="Taller + Express" icon={Receipt} color="pink" />
-        <KpiSmall label="Clientes" value={clientesOk ? kpis.clientes : "…"} sub="Registrados" icon={Users} color="orange" />
-        <KpiSmall label="Técnicos" value={kpis.tecnicos} sub="Con actividad" icon={GraduationCap} color="slate" />
-        <KpiSmall label="Rango" value={fmtFecha(range.from > 0 ? range.from : Date.now())} sub={`→ ${fmtFecha(range.to)}`} icon={CalendarRange} color="cyan" />
+      {/* INDICADORES: 2 bloques compactos */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        {/* Operación en vivo */}
+        <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl overflow-hidden">
+          <div className="px-4 pt-3 pb-2 flex items-center gap-2">
+            <Activity className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Operación en vivo</span>
+          </div>
+          <div className="grid grid-cols-5 divide-x divide-slate-800">
+            {liveCells.map((c) => (
+              <div key={c.label} className="px-3 pb-3 min-w-0">
+                <p className="text-[9px] font-bold uppercase tracking-wider text-slate-500 truncate">{c.label}</p>
+                <p className={`text-2xl font-black font-mono leading-tight ${c.color}`}>{c.value}</p>
+                <p className="text-[9px] text-slate-600 truncate">{c.sub}</p>
+              </div>
+            ))}
+          </div>
+          {/* Reparto de las órdenes activas */}
+          <div className="flex h-1.5 w-full bg-slate-950" title="Reparto de órdenes activas: en espera / en trabajo / listos">
+            {liveCells.filter((c) => c.bar).map((c) => (
+              <div key={c.label} className={c.bar!} style={{ width: `${((Number(c.value) || 0) / activeTotal) * 100}%` }} />
+            ))}
+          </div>
+        </div>
+
+        {/* Resultados del período */}
+        <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl overflow-hidden">
+          <div className="px-4 pt-3 pb-2 flex items-center gap-2">
+            <CircleDollarSign className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Resultados del período</span>
+            <span className="ml-auto text-[10px] text-slate-500 font-mono">
+              {clientesOk ? kpis.clientes : "…"} clientes · {kpis.tecnicos} técnicos
+            </span>
+          </div>
+          <div className="grid grid-cols-4 divide-x divide-slate-800">
+            <div className="px-3 pb-3 min-w-0">
+              <p className="text-[9px] font-bold uppercase tracking-wider text-slate-500 truncate">Entregados</p>
+              <p className="text-2xl font-black font-mono leading-tight text-slate-100">{kpis.entregadas}</p>
+              <p className="text-[9px] text-slate-600 truncate">ticket {fmtMoney(kpis.ticket)}</p>
+            </div>
+            <div className="px-3 pb-3 min-w-0">
+              <p className="text-[9px] font-bold uppercase tracking-wider text-slate-500 truncate">Taller</p>
+              <p className="text-lg font-black font-mono leading-tight text-cyan-300 truncate">{fmtMoney(kpis.ingresosOT)}</p>
+              <p className="text-[9px] text-slate-600 truncate">OT entregadas</p>
+            </div>
+            <div className="px-3 pb-3 min-w-0">
+              <p className="text-[9px] font-bold uppercase tracking-wider text-slate-500 truncate">Express</p>
+              <p className="text-lg font-black font-mono leading-tight text-amber-300 truncate">{fmtMoney(kpis.ingresosEx)}</p>
+              <p className="text-[9px] text-slate-600 truncate">recibos</p>
+            </div>
+            <div className="px-3 pb-3 min-w-0 bg-emerald-500/5">
+              <p className="text-[9px] font-bold uppercase tracking-wider text-emerald-400 truncate">Total</p>
+              <p className="text-lg font-black font-mono leading-tight text-emerald-300 truncate">{fmtMoney(kpis.total)}</p>
+              <p className="text-[9px] text-slate-600 truncate">taller + express</p>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* ALERTAS DE TIEMPO */}
+      {/* TIEMPOS VENCIDOS (desplegable) */}
       {alerts.length > 0 && (
-        <div className="bg-rose-950/40 border border-rose-800/60 rounded-2xl shadow-xl overflow-hidden">
-          <div className="p-3 px-4 border-b border-rose-800/50 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-400" />
+        <div className="bg-rose-950/30 border border-rose-800/50 rounded-2xl shadow-xl overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowAlerts((v) => !v)}
+            className="w-full p-3 px-4 flex items-center gap-3 text-left hover:bg-rose-900/10 transition-colors"
+          >
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             <span className="text-xs font-black text-rose-200 uppercase tracking-wider">Tiempos vencidos</span>
-            <span className="ml-auto text-[10px] font-mono text-rose-300/80">{alerts.length} alertas · por retraso</span>
-          </div>
-          <div className="p-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-            {alerts.slice(0, 9).map((a) => (
+            <span className="px-2 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/30 text-[10px] font-mono font-black text-rose-200">{alerts.length}</span>
+            <span className="hidden sm:inline text-[10px] text-rose-300/80 font-mono">
+              {criticalCount} críticas · {alerts.length - criticalCount} atrasadas
+            </span>
+            {worstAlert && !showAlerts && (
+              <span className="hidden lg:inline text-[10px] text-slate-400 truncate">
+                · más grave: <strong className="text-slate-200">{worstAlert.repair.client?.name || "Sin nombre"}</strong> ({STAGE_LABELS[worstAlert.stage] || worstAlert.stage}, {fmtDuration(worstAlert.elapsedMs)})
+              </span>
+            )}
+            <span className="ml-auto flex items-center gap-1 text-[10px] font-bold text-rose-300 uppercase tracking-wider shrink-0">
+              {showAlerts ? "Ocultar" : "Ver"}
+              <ChevronRight className={`w-3.5 h-3.5 transition-transform ${showAlerts ? "rotate-90" : ""}`} />
+            </span>
+          </button>
+          {showAlerts && (
+          <div className="p-3 pt-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 max-h-80 overflow-y-auto border-t border-rose-800/40">
+            <p className="md:col-span-2 xl:col-span-3 text-[10px] text-slate-500 pt-2">Ordenadas por retraso. Rojo = más del doble de la meta.</p>
+            {alerts.map((a) => (
               <div key={a.repair.id} className="bg-slate-950/60 rounded-xl border border-rose-900/40 px-3 py-2 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-[11px] font-bold text-slate-100 truncate">
                     {a.repair.client?.name || "Sin nombre"}
-                    <span className="text-slate-500 font-mono ml-1.5">#{a.repair.id.slice(0, 6)}</span>
+                    <span className="text-slate-500 font-mono ml-1.5">{a.repair.id}</span>
                   </p>
                   <p className="text-[9px] text-rose-300/80 font-medium truncate">
-                    {a.repair.vehicle?.type || "vehículo"} · {STAGE_LABELS[a.stage] || a.stage}
+                    {BRANCH_LABELS[a.repair.workshopBranch] || a.repair.workshopBranch} · {a.repair.vehicle?.type || "vehículo"} · {STAGE_LABELS[a.stage] || a.stage}
                   </p>
                 </div>
                 <div className="text-right shrink-0">
@@ -1510,6 +1577,7 @@ function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, serv
               </div>
             ))}
           </div>
+          )}
         </div>
       )}
 
