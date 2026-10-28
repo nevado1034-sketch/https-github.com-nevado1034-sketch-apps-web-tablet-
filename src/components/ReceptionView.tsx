@@ -38,6 +38,7 @@ import {
   MessageCircle
 } from "lucide-react";
 import { RepairItem, VehicleType, VisualState, Accessories, WorkshopBranch, ServiceType } from "../types";
+import { whatsappUrl } from "../utils/whatsapp";
 import { SignaturePad, PhotoManager, VideoRecorder, RecordedVideo } from "./TabletHelpers";
 import { generateRepairPdf } from "../utils/pdfGenerator";
 import { db, isFirebaseConfigured, collection, doc, setDoc, updateDoc, query, where, getDocs, onSnapshot, orderBy, limit } from "../firebase";
@@ -621,7 +622,7 @@ export default function ReceptionView({ repairs, onCreateRepair, onDeleteRepair,
   const buildWelcomeWaUrl = (r: RepairItem): string => {
     const phone = (r.client?.phone || "").replace(/[^\d]/g, "");
     const waPhone = phone ? (phone.startsWith("51") ? phone : phone.length === 9 ? "51" + phone : phone) : "";
-    return `https://wa.me/${waPhone}?text=${encodeURIComponent(buildWelcomeMessage(r))}`;
+    return whatsappUrl(waPhone, buildWelcomeMessage(r));
   };
 
   const sendWelcomeWa = async () => {

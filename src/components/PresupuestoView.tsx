@@ -18,6 +18,7 @@ import {
   Menu
 } from "lucide-react";
 import { RepairItem, SparePart, PaymentMethod } from "../types";
+import { whatsappUrl } from "../utils/whatsapp";
 import { AuthConfig, loadConfig } from "../auth";
 
 interface PresupuestoViewProps {
@@ -211,7 +212,7 @@ export default function PresupuestoView({ repairs, onUpdateRepair, userLocalKey,
       const message = buildWaMessage(r, link);
       const digits = (r.client.phone || "").replace(/[^\d]/g, "");
       const waPhone = digits.startsWith("51") ? digits : digits.length === 9 ? "51" + digits : digits;
-      window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(message)}`, "_blank");
+      window.open(whatsappUrl(waPhone, message), "_blank");
     } finally {
       setSendingWa(null);
     }

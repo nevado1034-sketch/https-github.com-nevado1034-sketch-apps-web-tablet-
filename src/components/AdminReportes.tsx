@@ -12,6 +12,19 @@ import { RepairItem } from "../types";
 import { db, isFirebaseConfigured, collection, query as fbQuery, where, orderBy as fbOrderBy, limit as fbLimit, startAfter, getDocs, getCountFromServer } from "../firebase";
 import { loadConfig } from "../auth";
 import { buildTechnicianStats, isActiveOrder, paymentMethodOf, UNREGISTERED_METHOD } from "../data/adminMetrics";
+import type { MonthBucket } from "../data/metrics";
+
+// Recharts solo se descarga al abrir el panel del admin (no pesa en las tablets).
+const RevenueTrendChart = React.lazy(() => import("./RevenueTrendChart"));
+const DonutChart = React.lazy(() => import("./DonutChart"));
+
+const SERVICE_HEX: Record<string, string> = {
+  mantenimiento: "#34d399",
+  diagnostico: "#22d3ee",
+  garantia: "#a78bfa",
+  cambio: "#fbbf24",
+  express: "#fb7185"
+};
 import { generateRepairPdf } from "../utils/pdfGenerator";
 import { openReceipt } from "./ExpressView";
 import {
@@ -835,7 +848,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     () =>
       monthlyTrend(
         sede === "__all__" ? repairs : scopedRepairs,
-        6,
+        12,
         Date.now(),
         scopedExpress.map((e) => ({ ts: expressTs(e), amount: Number(e.total || 0) }))
       ),
@@ -1424,7 +1437,7 @@ function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, serv
   goals: Goals;
   services: { counts: Record<string, number>; total: number };
   porSede: Array<{ branch: string; label: string; taller: number; count: number; express: number }>;
-  maxSede: number; trend: Array<{ key: string; label: string; revenue: number }>; maxTrend: number;
+  maxSede: number; trend: MonthBucket[]; maxTrend: number;
   editingGoals: boolean; draftGoals: Goals; setEditingGoals: (v: boolean) => void;
   setDraftGoals: (g: Goals) => void; applyGoals: () => void; draftSet: (k: string, h: string) => void;
   filteredRepairs: RepairItem[]; technicianNames: Set<string>;
@@ -1499,6 +1512,55 @@ function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, serv
           </div>
         </div>
       )}
+
+      {/* Gráfico de líneas principal: ingresos mensuales */}
+      <Card>
+        <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
+          <TrendingUp className="w-4 h-4 text-emerald-400" /> Evolución de Ingresos · Taller + Express
+        </h2>
+        <React.Suspense fallback={<div className="h-72 flex items-center justify-center text-xs text-slate-500">Cargando gráfico…</div>}>
+          <RevenueTrendChart data={trend} />
+        </React.Suspense>
+      </Card>
+
+      {/* Gráficos de dona: tipos de servicio e ingresos por sede */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <Card>
+          <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
+            <Wrench className="w-4 h-4 text-cyan-400" /> Tipos de Servicio · Período
+          </h2>
+          <React.Suspense fallback={<div className="h-48 flex items-center justify-center text-xs text-slate-500">Cargando gráfico…</div>}>
+            <DonutChart
+              centerLabel="servicios"
+              data={["mantenimiento", "diagnostico", "garantia", "cambio", "express"].map((k) => ({
+                key: k,
+                label: SERVICE_LABELS[k] || k,
+                value: services.counts[k] || 0,
+                color: SERVICE_HEX[k] || "#64748b"
+              }))}
+            />
+          </React.Suspense>
+        </Card>
+        <Card>
+          <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
+            <CircleDollarSign className="w-4 h-4 text-emerald-400" /> Ingresos por Sede · Período
+          </h2>
+          <React.Suspense fallback={<div className="h-48 flex items-center justify-center text-xs text-slate-500">Cargando gráfico…</div>}>
+            <DonutChart
+              centerLabel="ingresos"
+              format={fmtMoney}
+              data={porSede.map((b) => ({ key: b.branch, label: b.label, value: b.taller + b.express, color: BRANCH_HEX[b.branch] }))}
+            />
+          </React.Suspense>
+          <div className="mt-3 pt-3 border-t border-slate-800 grid grid-cols-2 gap-x-4 gap-y-1">
+            {porSede.map((b) => (
+              <p key={b.branch} className="text-[10px] text-slate-500 font-mono truncate">
+                <span className="font-bold" style={{ color: BRANCH_HEX[b.branch] }}>{b.label}</span>: {b.count} OT · {fmtMoney(b.express)} express
+              </p>
+            ))}
+          </div>
+        </Card>
+      </div>
 
       {/* Metas por Etapa (semáforo) + Tiempos por Proceso */}
       <div className="bg-slate-900 rounded-2xl border border-slate-800 shadow-xl overflow-hidden">
@@ -1606,57 +1668,6 @@ function DashboardView({ kpis, alerts, clientesOk, range, operacion, goals, serv
         )}
       </div>
 
-      {/* Servicios del período */}
-      <Card>
-        <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
-          <Wrench className="w-4 h-4 text-cyan-400" /> Servicios en el período
-        </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          {["mantenimiento", "diagnostico", "garantia", "cambio", "express"].map((k) => (
-            <div key={k} className={`rounded-2xl border p-4 ${SERVICE_COLORS[k] || "border-slate-700"}`}>
-              <p className="text-[10px] uppercase font-bold tracking-wider opacity-80">{SERVICE_LABELS[k]}</p>
-              <p className="text-3xl font-black font-mono mt-1">{services.counts[k] || 0}</p>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* Ingresos por sede + tendencia */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <Card>
-          <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
-            <CircleDollarSign className="w-4 h-4 text-emerald-400" /> Ingresos por Sede
-          </h2>
-          <div className="space-y-3.5">
-            {porSede.map((b) => (
-              <div key={b.branch} className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-300">{b.label}</span>
-                  <span className="text-xs font-black font-mono" style={{ color: BRANCH_HEX[b.branch] }}>{fmtMoney(b.taller + b.express)}</span>
-                </div>
-                <div className="w-full bg-slate-950/80 h-1.5 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${((b.taller + b.express) / maxSede) * 100}%`, backgroundColor: BRANCH_HEX[b.branch] }}></div>
-                </div>
-                <p className="text-[9px] text-slate-500 font-mono">{b.count} OT · {fmtMoney(b.express)} express</p>
-              </div>
-            ))}
-          </div>
-        </Card>
-        <Card>
-          <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider mb-4 flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-emerald-400" /> Ingresos · Últimos 6 meses (Taller + Express)
-          </h2>
-          <div className="grid grid-cols-6 gap-2 items-end h-36">
-            {trend.map((t) => (
-              <div key={t.key} className="flex flex-col items-center justify-end h-full gap-1.5">
-                <span className="text-[8px] font-mono font-bold text-slate-400">{fmtMoney(t.revenue)}</span>
-                <div className="w-full rounded-t-lg bg-gradient-to-t from-emerald-600 to-emerald-400 transition-all duration-700" style={{ height: `${Math.max((t.revenue / maxTrend) * 100, 2)}%` }} title={`${t.label}: ${fmtMoney(t.revenue)}`}></div>
-                <span className="text-[9px] font-bold uppercase text-slate-500">{t.label}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
     </div>
   );
 }

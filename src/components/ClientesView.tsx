@@ -28,6 +28,7 @@ import {
   sortedNotices,
   whatsappPhone
 } from "../data/pickupNotice";
+import { whatsappUrl } from "../utils/whatsapp";
 import { RepairItem, RepairStatus } from "../types";
 import { generateRepairPdf } from "../utils/pdfGenerator";
 import { detectDocumentType, normalizeDocument } from "../data/documentValidator";
@@ -181,7 +182,7 @@ export default function ClientesView({ repairs, onUpdateRepair, userLocalKey, us
   const [savingNotice, setSavingNotice] = useState(false);
 
   const openWhatsApp = (phone: string, message: string) => {
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, "_blank");
+    window.open(whatsappUrl(phone, message), "_blank");
   };
 
   const startPickupNotice = (r: RepairItem) => {
