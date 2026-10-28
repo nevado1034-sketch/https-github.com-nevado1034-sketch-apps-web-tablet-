@@ -11,7 +11,8 @@ import { jsPDF } from "jspdf";
 import { RepairItem } from "../types";
 import { db, isFirebaseConfigured, collection, query as fbQuery, where, orderBy as fbOrderBy, limit as fbLimit, startAfter, getDocs, getCountFromServer } from "../firebase";
 import { loadConfig } from "../auth";
-import { buildTechnicianStats, isActiveOrder, paymentMethodOf, UNREGISTERED_METHOD } from "../data/adminMetrics";
+import { buildBranchAdvisorStats, buildTechnicianStats, isActiveOrder, paymentMethodOf, UNREGISTERED_METHOD } from "../data/adminMetrics";
+import type { BranchAdvisorStat, TechnicianStat } from "../data/adminMetrics";
 import type { MonthBucket } from "../data/metrics";
 
 // Recharts solo se descarga al abrir el panel del admin (no pesa en las tablets).
@@ -57,7 +58,7 @@ const NAV: Array<{ key: ReporteView; label: string; desc: string; icon: React.El
   { key: "clientes", label: "Lista de Clientes", desc: "Clientes registrados", icon: Users },
   { key: "servicios", label: "Tipos de Servicio", desc: "Conteo por servicio", icon: Wrench },
   { key: "finanzas", label: "Finanzas", desc: "Ingresos y recibos", icon: CircleDollarSign },
-  { key: "tecnicos", label: "Técnicos", desc: "Horas de trabajo", icon: GraduationCap },
+  { key: "tecnicos", label: "Personal", desc: "Técnicos y asesoras", icon: GraduationCap },
   { key: "bitacora", label: "Bitácora de Cambios", desc: "Ediciones de recepción por asesora", icon: History }
 ];
 
@@ -786,6 +787,17 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     [scopedRepairs, scopedExpress, range]
   );
 
+  // ── ASESORAS (por sede) ──
+  const asesoras = useMemo(
+    () =>
+      buildBranchAdvisorStats(
+        scopedRepairs,
+        scopedExpress.map((e) => ({ localKey: e.localKey, ts: expressTs(e), total: Number(e.total || 0) })),
+        { branches: sede === "__all__" ? BRANCHES : [sede], range }
+      ),
+    [scopedRepairs, scopedExpress, range, sede]
+  );
+
   // ── FINANZAS ──
   const finanzas = useMemo(() => {
     const otRows = scopedRepairs
@@ -891,9 +903,27 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
     ["Fecha", "Origen", "Tipo", "ID", "Cliente", "Sede", "Monto"],
     ...finanzas.all.map((r) => [fmtFecha(r.fecha), r.origen, SERVICE_LABELS[r.tipo] || r.tipo, r.id, r.cliente, BRANCH_LABELS[r.sede] || r.sede, `S/ ${Math.round(r.monto).toLocaleString()}`])
   ];
+  const tecnicoPdfRow = (t: TechnicianStat) => [
+    t.name, BRANCH_LABELS[t.sede] || t.sede || "—", t.ot, t.terminadas, t.express, `${t.conCronometro}/${t.ot}`,
+    t.conCronometro ? fmtDuration(t.netMs) : "—",
+    t.conCronometro ? fmtDuration(t.netMs / t.conCronometro) : "—",
+    t.retrabajos, t.sospechosos
+  ];
+  const asesoraRow = (a: BranchAdvisorStat) => [
+    BRANCH_LABELS[a.branch] || a.branch, a.recepciones, a.presupuestos, a.aprobados,
+    a.tasaAprobacion === null ? "—" : `${Math.round(a.tasaAprobacion * 100)}%`,
+    a.entregas, a.cancelaciones, a.expressCount, fmtMoney(a.expressTotal), a.avisosRecojo, a.listosSinAviso, a.listosConAlmacenaje
+  ];
+  const TECNICOS_HEAD = ["Técnico", "Sede", "Órdenes", "Terminadas", "Express", "Con cronómetro", "Horas netas", "Promedio/trabajo", "Retrabajos", "Cronómetros sospechosos"];
+  const ASESORAS_HEAD = ["Sede", "Recepciones", "Presupuestos", "Aprobados", "Tasa aprob.", "Entregas", "Cancelaciones", "Express", "Express S/", "Avisos recojo", "Listos sin aviso", "Con almacenaje"];
   const tecnicosRows: unknown[][] = [
-    ["Técnico", "Sede", "Órdenes", "Terminadas", "Express", "Con cronómetro", "Horas netas (cronómetro)"],
-    ...tecnicos.map((t) => [t.name, BRANCH_LABELS[t.sede] || t.sede || "—", t.ot, t.terminadas, t.express, `${t.conCronometro}/${t.ot}`, fmtDuration(t.netMs)])
+    ["TÉCNICOS (por persona)"],
+    TECNICOS_HEAD,
+    ...tecnicos.map(tecnicoPdfRow),
+    [],
+    ["ASESORAS (por sede)"],
+    ASESORAS_HEAD,
+    ...asesoras.map(asesoraRow)
   ];
   const operacionRows: unknown[][] = [
     ["Métrica", "Valor"],
@@ -1107,10 +1137,20 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
         const rows = bitacora.map((b) => [fmtFechaHora(b.date), b.user, b.orderId, b.clientName, BRANCH_LABELS[b.branch] || b.branch || "—", b.details]);
         drawTable(["Fecha/Hora", "Asesora", "OT", "Cliente", "Sede", "Detalle de cambios"], rows, [1.2, 1.1, 0.9, 1.3, 1.1, 2.4]);
       } else {
-        drawHeader("Técnicos · Horas de Trabajo");
-        sectionTitle("4. Técnicos · Horas de Trabajo");
-        const rows = tecnicos.map((t) => [t.name, BRANCH_LABELS[t.sede] || t.sede || "—", t.ot, t.terminadas, t.express, `${t.conCronometro}/${t.ot}`, fmtDuration(t.netMs)]);
-        drawTable(["Técnico", "Sede", "Órdenes", "Terminadas", "Express", "Con cronómetro", "Horas netas"], rows, [1.5, 1.2, 0.8, 0.9, 0.8, 1.0, 1.1]);
+        drawHeader("Personal · Técnicos y Asesoras");
+        sectionTitle("4. Técnicos · por persona");
+        drawTable(
+          ["Técnico", "Sede", "Órd.", "Term.", "Expr.", "Crono", "Horas netas", "Prom.", "Retrab.", "Sosp."],
+          tecnicos.map((t) => tecnicoPdfRow(t).map((v) => (typeof v === "number" ? v : String(v)))),
+          [1.5, 1.1, 0.6, 0.6, 0.6, 0.7, 1.0, 0.9, 0.7, 0.6]
+        );
+        y += 10;
+        sectionTitle("5. Asesoras · por sede");
+        drawTable(
+          ["Sede", "Recep.", "Presup.", "Aprob.", "Tasa", "Entreg.", "Cancel.", "Expr.", "Expr. S/", "Avisos", "Sin aviso", "Almac."],
+          asesoras.map((a) => asesoraRow(a).map((v) => (typeof v === "number" ? v : String(v)))),
+          [1.2, 0.7, 0.7, 0.7, 0.6, 0.7, 0.7, 0.6, 0.9, 0.7, 0.8, 0.7]
+        );
       }
 
       // footer
@@ -1359,7 +1399,7 @@ export default function AdminReportes({ repairs, expressReceipts }: AdminReporte
             <FinanzasTab finanzas={finanzas} byMethod={finanzasByMethod} />
           )}
           {view === "tecnicos" && (
-            <TecnicosTab rows={tecnicos} />
+            <PersonalTab tecnicos={tecnicos} asesoras={asesoras} />
           )}
           {view === "bitacora" && (
             <BitacoraTab rows={bitacoraRows} />
@@ -2191,18 +2231,34 @@ function FinanzasTab({ finanzas, byMethod }: { finanzas: any; byMethod: Array<[s
 }
 
 // ── View: TÉCNICOS ──
-function TecnicosTab({ rows }: { rows: any[] }) {
+function PersonalTab({ tecnicos, asesoras }: { tecnicos: TechnicianStat[]; asesoras: BranchAdvisorStat[] }) {
+  const rows = tecnicos;
+  const maxNet = Math.max(...rows.map((t) => t.netMs), 1);
+  const totals = asesoras.reduce(
+    (s, a) => ({
+      recepciones: s.recepciones + a.recepciones,
+      presupuestos: s.presupuestos + a.presupuestos,
+      aprobados: s.aprobados + a.aprobados,
+      entregas: s.entregas + a.entregas,
+      sinAviso: s.sinAviso + a.listosSinAviso,
+      almacenaje: s.almacenaje + a.listosConAlmacenaje
+    }),
+    { recepciones: 0, presupuestos: 0, aprobados: 0, entregas: 0, sinAviso: 0, almacenaje: 0 }
+  );
   return (
+    <div className="space-y-5">
+    {/* ── TÉCNICOS (por persona) ── */}
     <Card className="print:border-0 print:shadow-none">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider flex items-center gap-2">
-          <Clock className="w-4 h-4 text-cyan-400" /> Técnicos · Horas Netas de Trabajo
+          <Clock className="w-4 h-4 text-cyan-400" /> Técnicos · por persona
           <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-mono text-slate-300">{rows.length}</span>
         </h2>
       </div>
       <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
-        Horas netas = tiempo del cronómetro de la Mesa de Trabajo, sin pausas ni esperas (presupuesto, pago, recojo).
-        Las órdenes sin cronómetro no suman horas.
+        Horas netas = cronómetro de la Mesa de Trabajo, sin pausas ni esperas. <strong className="text-slate-400">Retrabajos</strong> = veces que
+        Control de Calidad devolvió el trabajo. <strong className="text-amber-300">⚠ Sospechosos</strong> = cronómetros con más de 12 h seguidas
+        (probable olvido de pausar); solo se señalan, los datos no se modifican.
       </p>
       {rows.length === 0 ? (
         <p className="text-sm text-slate-500 py-8 text-center">Sin actividad de técnicos en el período.</p>
@@ -2217,13 +2273,21 @@ function TecnicosTab({ rows }: { rows: any[] }) {
                 <th className="py-2 pr-3 text-right">Terminadas</th>
                 <th className="py-2 pr-3 text-right">Express</th>
                 <th className="py-2 pr-3 text-right">Con cronómetro</th>
-                <th className="py-2 text-right">Horas netas</th>
+                <th className="py-2 pr-3 text-right">Horas netas</th>
+                <th className="py-2 pr-3 text-right">Promedio</th>
+                <th className="py-2 pr-3 text-right">Retrabajos</th>
+                <th className="py-2 text-right">Sospechosos</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((t, i) => (
                 <tr key={i} className="border-b border-slate-800/70 hover:bg-slate-800/30">
-                  <td className="py-2.5 pr-3 font-bold text-slate-100">{t.name}</td>
+                  <td className="py-2.5 pr-3 font-bold text-slate-100">
+                    {t.name}
+                    {t.conCronometro > 0 && (
+                      <div className="mt-1 w-24"><MiniBar value={t.netMs} max={maxNet} color="cyan" /></div>
+                    )}
+                  </td>
                   <td className="py-2.5 pr-3">
                     <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-bold text-slate-300">{BRANCH_LABELS[t.sede] || t.sede || "—"}</span>
                   </td>
@@ -2231,7 +2295,10 @@ function TecnicosTab({ rows }: { rows: any[] }) {
                   <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{t.terminadas}</td>
                   <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{t.express}</td>
                   <td className={`py-2.5 pr-3 text-right font-mono ${t.conCronometro < t.ot ? "text-amber-300" : "text-slate-300"}`}>{t.conCronometro}/{t.ot}</td>
-                  <td className="py-2.5 text-right font-mono font-bold text-cyan-300">{t.conCronometro ? fmtDuration(t.netMs) : "—"}</td>
+                  <td className="py-2.5 pr-3 text-right font-mono font-bold text-cyan-300">{t.conCronometro ? fmtDuration(t.netMs) : "—"}</td>
+                  <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{t.conCronometro ? fmtDuration(t.netMs / t.conCronometro) : "—"}</td>
+                  <td className={`py-2.5 pr-3 text-right font-mono ${t.retrabajos ? "text-rose-300 font-bold" : "text-slate-500"}`}>{t.retrabajos}</td>
+                  <td className={`py-2.5 text-right font-mono ${t.sospechosos ? "text-amber-300 font-bold" : "text-slate-500"}`}>{t.sospechosos ? `⚠ ${t.sospechosos}` : "0"}</td>
                 </tr>
               ))}
             </tbody>
@@ -2239,6 +2306,73 @@ function TecnicosTab({ rows }: { rows: any[] }) {
         </div>
       )}
     </Card>
+
+    {/* ── ASESORAS (por sede) ── */}
+    <Card className="print:border-0 print:shadow-none">
+      <h2 className="text-sm font-black text-slate-100 uppercase tracking-wider flex items-center gap-2 mb-2">
+        <Users className="w-4 h-4 text-purple-400" /> Asesoras · por sede
+      </h2>
+      <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
+        Gestión de cada sede en el período. <strong className="text-slate-400">Tasa de aprobación</strong> = presupuestos aprobados (pagados) / presupuestos enviados.
+        "Listos sin aviso" y "Con almacenaje" son la situación actual.
+      </p>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+        {[
+          { l: "Recepciones", v: totals.recepciones, c: "text-cyan-300" },
+          { l: "Presupuestos", v: totals.presupuestos, c: "text-amber-300" },
+          { l: "Aprobados", v: totals.aprobados, c: "text-emerald-300" },
+          { l: "Tasa aprob.", v: totals.presupuestos ? `${Math.round((Math.min(totals.aprobados, totals.presupuestos) / totals.presupuestos) * 100)}%` : "—", c: "text-emerald-300" },
+          { l: "Entregas", v: totals.entregas, c: "text-slate-100" },
+          { l: "Listos sin aviso", v: totals.sinAviso, c: totals.sinAviso ? "text-rose-300" : "text-slate-100" }
+        ].map((k) => (
+          <div key={k.l} className="bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2">
+            <p className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">{k.l}</p>
+            <p className={`text-lg font-black font-mono ${k.c}`}>{k.v}</p>
+          </div>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+              <th className="py-2 pr-3">Sede</th>
+              <th className="py-2 pr-3 text-right">Recepciones</th>
+              <th className="py-2 pr-3 text-right">Presupuestos</th>
+              <th className="py-2 pr-3 text-right">Aprobados</th>
+              <th className="py-2 pr-3 text-right">Tasa</th>
+              <th className="py-2 pr-3 text-right">Entregas</th>
+              <th className="py-2 pr-3 text-right">Cancel.</th>
+              <th className="py-2 pr-3 text-right">Express</th>
+              <th className="py-2 pr-3 text-right">Avisos recojo</th>
+              <th className="py-2 pr-3 text-right">Listos sin aviso</th>
+              <th className="py-2 text-right">Con almacenaje</th>
+            </tr>
+          </thead>
+          <tbody>
+            {asesoras.map((a) => (
+              <tr key={a.branch} className="border-b border-slate-800/70 hover:bg-slate-800/30">
+                <td className="py-2.5 pr-3 font-bold" style={{ color: BRANCH_HEX[a.branch] }}>{BRANCH_LABELS[a.branch] || a.branch}</td>
+                <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{a.recepciones}</td>
+                <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{a.presupuestos}</td>
+                <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{a.aprobados}</td>
+                <td className="py-2.5 pr-3 text-right font-mono font-bold text-emerald-300">
+                  {a.tasaAprobacion === null ? "—" : `${Math.round(a.tasaAprobacion * 100)}%`}
+                </td>
+                <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{a.entregas}</td>
+                <td className="py-2.5 pr-3 text-right font-mono text-slate-400">{a.cancelaciones}</td>
+                <td className="py-2.5 pr-3 text-right font-mono text-slate-300">
+                  {a.expressCount} <span className="text-slate-500">· {fmtMoney(a.expressTotal)}</span>
+                </td>
+                <td className="py-2.5 pr-3 text-right font-mono text-slate-300">{a.avisosRecojo}</td>
+                <td className={`py-2.5 pr-3 text-right font-mono ${a.listosSinAviso ? "text-rose-300 font-bold" : "text-slate-500"}`}>{a.listosSinAviso}</td>
+                <td className={`py-2.5 text-right font-mono ${a.listosConAlmacenaje ? "text-amber-300 font-bold" : "text-slate-500"}`}>{a.listosConAlmacenaje}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+    </div>
   );
 }
 

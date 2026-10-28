@@ -1,7 +1,15 @@
 import { describe, it, expect } from "vitest";
 import type { RepairItem, WorkLogEntry } from "../types";
 import type { AuthConfig } from "../auth";
-import { buildTechnicianStats, isActiveOrder, orderTechnician, paymentMethodOf } from "./adminMetrics";
+import {
+  buildBranchAdvisorStats,
+  buildTechnicianStats,
+  hasSuspiciousTimer,
+  isActiveOrder,
+  orderTechnician,
+  paymentMethodOf,
+  reworkCount
+} from "./adminMetrics";
 import { monthlyTrend } from "./metrics";
 
 function makeRepair(overrides: Partial<RepairItem> = {}): RepairItem {
@@ -110,6 +118,88 @@ describe("técnicos: horas netas del cronómetro", () => {
   it("prioriza al técnico derivado a la mesa", () => {
     expect(orderTechnician({ assignedTech: "Ana", technicianName: "Téc. Luis" })).toBe("Ana");
     expect(orderTechnician({ technicianName: "Téc. Luis" })).toBe("Luis");
+  });
+});
+
+describe("retrabajos y cronómetros sospechosos", () => {
+  const log = (date: string, status: any) => ({ id: date, date, status, description: "", user: "" });
+
+  it("cuenta cada vez que Calidad devolvió el trabajo a la mesa", () => {
+    const r = makeRepair({
+      historyLog: [
+        log("2026-10-01T10:00:00.000Z", "repairing"),
+        log("2026-10-02T10:00:00.000Z", "testing"),
+        log("2026-10-02T12:00:00.000Z", "repairing"),
+        log("2026-10-03T10:00:00.000Z", "testing"),
+        log("2026-10-03T11:00:00.000Z", "ready")
+      ]
+    });
+    expect(reworkCount(r)).toBe(1);
+    expect(reworkCount(makeRepair())).toBe(0);
+  });
+
+  it("marca un tramo de más de 12 h seguidas, sin cambiar los datos", () => {
+    const normal = makeRepair({ status: "repairing", workLog: wl([["inicio", "2026-10-02T08:00:00.000Z"], ["pausa", "2026-10-02T14:00:00.000Z"]]) });
+    const olvidado = makeRepair({ status: "repairing", workLog: wl([["inicio", "2026-10-02T08:00:00.000Z"], ["pausa", "2026-10-03T09:00:00.000Z"]]) });
+    expect(hasSuspiciousTimer(normal)).toBe(false);
+    expect(hasSuspiciousTimer(olvidado)).toBe(true);
+    expect(olvidado.workLog).toHaveLength(2);
+  });
+
+  it("los suma al técnico", () => {
+    const r = makeRepair({
+      assignedTech: "Ana",
+      workLog: wl([["inicio", "2026-10-02T08:00:00.000Z"], ["pausa", "2026-10-03T09:00:00.000Z"]]),
+      historyLog: [log("2026-10-02T07:00:00.000Z", "repairing"), log("2026-10-02T09:00:00.000Z", "testing"), log("2026-10-02T10:00:00.000Z", "repairing")]
+    });
+    const [ana] = buildTechnicianStats([r], [], { range, config, orderTs });
+    expect(ana).toMatchObject({ retrabajos: 1, sospechosos: 1 });
+  });
+});
+
+describe("asesoras por sede", () => {
+  const log = (date: string, status: any) => ({ id: date + status, date, status, description: "", user: "" });
+
+  it("recepciones, presupuestos, aprobados, entregas, Express y avisos de recojo", () => {
+    const repairs = [
+      // Aprobado por teléfono: la asesora pasó la orden de Presupuesto a Reparación.
+      makeRepair({ id: "A", status: "delivered", receptionDate: "2026-10-02T10:00:00.000Z", deliveredAt: "2026-10-05T10:00:00.000Z", historyLog: [log("2026-10-03T10:00:00.000Z", "quoted"), log("2026-10-04T10:00:00.000Z", "repairing")] }),
+      makeRepair({ id: "B", status: "quoted", receptionDate: "2026-10-06T10:00:00.000Z", historyLog: [log("2026-10-07T10:00:00.000Z", "quoted")] }),
+      // Aprobado por el cliente desde su enlace: pasa a "paid" sin log de estado.
+      makeRepair({
+        id: "F",
+        status: "paid",
+        receptionDate: "2026-09-20T10:00:00.000Z",
+        approvalStatus: "aprobado",
+        approvalResponseAt: "2026-10-08T10:00:00.000Z",
+        historyLog: [log("2026-09-25T10:00:00.000Z", "quoted")]
+      }),
+      makeRepair({
+        id: "C",
+        status: "ready",
+        receptionDate: "2026-09-01T10:00:00.000Z",
+        pickupNotices: [{ n: 1, at: "2026-10-01T10:00:00.000Z", by: "Rosa", phone: "" }]
+      }),
+      makeRepair({ id: "D", status: "ready", receptionDate: "2026-09-01T10:00:00.000Z" }),
+      makeRepair({ id: "E", status: "repairing", workshopBranch: "surco", receptionDate: "2026-10-02T10:00:00.000Z" })
+    ];
+    const [si] = buildBranchAdvisorStats(
+      repairs,
+      [{ localKey: "lince_arenales", ts: range.from + 1000, total: 40 }],
+      { branches: ["lince_arenales"], range, now: new Date("2026-10-20T10:00:00.000Z").getTime() }
+    );
+    expect(si).toMatchObject({
+      recepciones: 2,
+      presupuestos: 2,
+      aprobados: 2,
+      tasaAprobacion: 1,
+      entregas: 1,
+      expressCount: 1,
+      expressTotal: 40,
+      avisosRecojo: 1,
+      listosSinAviso: 1,
+      listosConAlmacenaje: 1
+    });
   });
 });
 

@@ -42,9 +42,21 @@ interface ExpressReceipt {
   seq?: number;
   items: ReceiptItem[];
   total: number;
+  paymentMethod?: string; // efectivo | yape_plin | transferencia | tarjeta (vacío en recibos antiguos)
   annulled?: boolean;
   annulledAt?: string;
   annulReason?: string;
+}
+
+export const EXPRESS_PAYMENT_METHODS: Array<{ key: string; label: string }> = [
+  { key: "efectivo", label: "Efectivo" },
+  { key: "yape_plin", label: "Yape / Plin" },
+  { key: "transferencia", label: "Transferencia" },
+  { key: "tarjeta", label: "Tarjeta" }
+];
+
+export function paymentMethodLabel(key?: string): string {
+  return EXPRESS_PAYMENT_METHODS.find((m) => m.key === key)?.label || "";
 }
 
 const LOCALES = [
@@ -152,6 +164,7 @@ function sanitizeReceipt(raw: unknown): ExpressReceipt {
     seq: num(r.seq),
     items,
     total: num(r.total, items.reduce((s, i) => s + i.subtotal, 0)),
+    paymentMethod: str(r.paymentMethod),
     annulled: r.annulled === true,
     annulledAt: str(r.annulledAt),
     annulReason: str(r.annulReason)
@@ -264,6 +277,7 @@ function buildReceiptHtml(receipt: ExpressReceipt, withToolbar = false): string 
   ${itemsHtml}
   <div class="dashed"></div>
   <div class="total"><span>TOTAL</span><span>${money(receipt.total)}</span></div>
+  ${paymentMethodLabel(receipt.paymentMethod) ? `<p class="muted" style="margin-top:3px;">Pago: ${esc(paymentMethodLabel(receipt.paymentMethod))}</p>` : ""}
   <div class="dashed"></div>
   ${receipt.annulled ? `<div class="center"><div class="anulado">ANULADO</div></div><div class="dashed"></div>` : ""}
   <p class="thanks">&iexcl;Gracias por su visita!</p>
@@ -339,6 +353,7 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
   const [clientPhone, setClientPhone] = useState("");
   const [vehicleType, setVehicleType] = useState("");
   const [technicianName, setTechnicianName] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("");
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [preview, setPreview] = useState<ExpressReceipt | null>(null);
   const [showConfig, setShowConfig] = useState(false);
@@ -511,6 +526,10 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
       alert("El técnico asignado es obligatorio para generar el recibo.");
       return;
     }
+    if (!paymentMethod) {
+      alert("Selecciona el método de pago (Efectivo, Yape / Plin, Transferencia o Tarjeta) para generar el recibo.");
+      return;
+    }
 
     const count = loadCount(localKey);
     const maxSeq = history.reduce((m, r) => Math.max(m, r.seq || 0), 0);
@@ -622,7 +641,8 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
       createdBy: userName || "",
       seq: nextCount,
       items,
-      total: items.reduce((sum, i) => sum + i.subtotal, 0)
+      total: items.reduce((sum, i) => sum + i.subtotal, 0),
+      paymentMethod
     };
     setPreview(receipt);
 
@@ -644,6 +664,8 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
       localStorage.setItem(historyKey(localKey), JSON.stringify(updated));
     } catch {}
     setServices((prev) => prev.map((s) => ({ ...s, qty: 0 })));
+    // El siguiente cliente debe elegir su propio método de pago.
+    setPaymentMethod("");
   };
 
   const handlePrint = () => {
@@ -989,6 +1011,29 @@ export default function ExpressView({ userLocalKey, userName }: { userLocalKey?:
                   Total: <span className="text-cyan-400">{money(selectedTotal)}</span>
                 </div>
               </div>
+
+              {/* Método de pago (obligatorio) */}
+              <div className="mt-3">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  Método de pago <span className="text-rose-400">*</span>
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {EXPRESS_PAYMENT_METHODS.map((m) => (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setPaymentMethod(m.key)}
+                      className={`py-2.5 rounded-xl text-xs font-black border transition-all ${
+                        paymentMethod === m.key
+                          ? "bg-cyan-500 text-slate-950 border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
+                          : "bg-slate-950 text-slate-300 border-slate-800 hover:border-cyan-500/40"
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <button
@@ -1200,6 +1245,9 @@ export function ReceiptPaper({ receipt }: { receipt: ExpressReceipt }) {
           <span>TOTAL</span>
           <span>{money(receipt.total)}</span>
         </div>
+        {paymentMethodLabel(receipt.paymentMethod) && (
+          <p className="text-[9px] mt-0.5">Pago: {paymentMethodLabel(receipt.paymentMethod)}</p>
+        )}
         <div className="border-t border-dashed border-black my-2"></div>
         <p className="text-center text-[9px] font-semibold">¡Gracias por su visita!</p>
         <p className="text-center text-[8px]">Servicio Express · Litio Energy</p>

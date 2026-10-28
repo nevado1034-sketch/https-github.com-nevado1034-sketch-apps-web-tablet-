@@ -10,6 +10,7 @@
 import type { RepairItem } from "../types";
 import type { AuthConfig } from "../auth";
 import { computeNetWorkMs, hasRegisteredWorkTime, isFinishedStatus, normalizeTechName, workClosedAt } from "./technicianProduction";
+import { pickupStatus } from "./pickupNotice";
 
 export interface TimeRange {
   from: number;
@@ -28,6 +29,59 @@ export interface TechnicianStat {
   netMs: number;
   /** Órdenes en las que se usó el cronómetro. */
   conCronometro: number;
+  /** Veces que Control de Calidad devolvió un trabajo a la mesa. */
+  retrabajos: number;
+  /** Órdenes con un tramo de cronómetro sospechosamente largo (probable olvido). */
+  sospechosos: number;
+}
+
+/** Un tramo continuo de cronómetro más largo que esto se considera sospechoso. */
+export const SUSPICIOUS_SEGMENT_MS = 12 * 60 * 60 * 1000;
+
+function logTs(date?: string): number {
+  const t = new Date(date || "").getTime();
+  return isFinite(t) ? t : NaN;
+}
+
+/** Veces que la orden pasó de Control de Calidad (testing) de vuelta a la mesa (repairing). */
+export function reworkCount(r: Pick<RepairItem, "historyLog">): number {
+  const logs = (r.historyLog || [])
+    .filter((l) => isFinite(logTs(l.date)) && l.status)
+    .sort((a, b) => logTs(a.date) - logTs(b.date));
+  let count = 0;
+  let prev: string | null = null;
+  for (const l of logs) {
+    if (l.status === prev) continue;
+    if (prev === "testing" && l.status === "repairing") count++;
+    prev = l.status;
+  }
+  return count;
+}
+
+/**
+ * ¿Algún tramo del cronómetro duró más de 12 h seguidas? Suele indicar que el
+ * técnico olvidó pausar. Solo se señala; los datos no se modifican.
+ */
+export function hasSuspiciousTimer(r: RepairItem, now = Date.now(), thresholdMs = SUSPICIOUS_SEGMENT_MS): boolean {
+  const entries = (r.workLog || [])
+    .map((e) => ({ action: e.action, t: logTs(e.at) }))
+    .filter((e) => isFinite(e.t))
+    .sort((a, b) => a.t - b.t);
+  let start: number | null = null;
+  for (const e of entries) {
+    if (e.action === "inicio" || e.action === "reanudar") {
+      if (start === null) start = e.t;
+    } else if (e.action === "pausa" && start !== null) {
+      if (e.t - start > thresholdMs) return true;
+      start = null;
+    }
+  }
+  if (start !== null) {
+    const closed = workClosedAt(r);
+    const end = closed !== null ? Math.min(now, Math.max(closed, start)) : now;
+    if (end - start > thresholdMs) return true;
+  }
+  return false;
 }
 
 /** Una orden sigue abierta en el taller (no entregada ni cancelada). */
@@ -84,6 +138,91 @@ export function buildStaffIndex(config: AuthConfig | null | undefined): StaffInd
   return { techSede, advisors };
 }
 
+// ─────────────────────────── ASESORAS POR SEDE ───────────────────────────
+
+export interface BranchAdvisorStat {
+  branch: string;
+  /** Vehículos ingresados (recepción) en el período. */
+  recepciones: number;
+  /** Órdenes que pasaron a Presupuesto en el período. */
+  presupuestos: number;
+  /** Órdenes que pasaron a Pagado (presupuesto aprobado) en el período. */
+  aprobados: number;
+  /** aprobados / presupuestos (0–1); null si no hubo presupuestos. */
+  tasaAprobacion: number | null;
+  entregas: number;
+  cancelaciones: number;
+  expressCount: number;
+  expressTotal: number;
+  /** Avisos de recojo por WhatsApp enviados en el período. */
+  avisosRecojo: number;
+  /** Situación actual: vehículos listos sin ningún aviso de recojo. */
+  listosSinAviso: number;
+  /** Situación actual: vehículos listos con almacenaje corriendo (más de 10 días desde el primer aviso). */
+  listosConAlmacenaje: number;
+}
+
+const AFTER_BUDGET = new Set(["paid", "repairing", "testing", "ready", "delivered"]);
+
+/**
+ * Momento en que se aprobó el presupuesto:
+ *  - si el cliente respondió "aprobado" en su enlace, esa fecha;
+ *  - si no, cuando la orden avanzó desde Presupuesto (a pago, reparación,
+ *    calidad, listo o entregado), que es como se aprueba por teléfono o en tienda.
+ */
+export function budgetApprovedAt(r: Pick<RepairItem, "approvalStatus" | "approvalResponseAt" | "historyLog">): number | null {
+  if (r.approvalStatus === "aprobado") {
+    const t = logTs(r.approvalResponseAt);
+    if (isFinite(t)) return t;
+  }
+  const logs = (r.historyLog || [])
+    .filter((l) => isFinite(logTs(l.date)))
+    .sort((a, b) => logTs(a.date) - logTs(b.date));
+  const quoted = logs.find((l) => l.status === "quoted");
+  if (!quoted) return null;
+  const next = logs.find((l) => logTs(l.date) > logTs(quoted.date) && AFTER_BUDGET.has(l.status));
+  return next ? logTs(next.date) : null;
+}
+
+function firstStatusTs(r: RepairItem, status: string, range: TimeRange): boolean {
+  return (r.historyLog || []).some((l) => {
+    if (l.status !== status) return false;
+    const t = logTs(l.date);
+    return isFinite(t) && t >= range.from && t <= range.to;
+  });
+}
+
+export function buildBranchAdvisorStats(
+  repairs: RepairItem[],
+  express: Array<{ localKey?: string; ts: number; total: number }>,
+  opts: { branches: readonly string[]; range: TimeRange; now?: number }
+): BranchAdvisorStat[] {
+  const now = opts.now ?? Date.now();
+  const inRange = (t: number) => isFinite(t) && t >= opts.range.from && t <= opts.range.to;
+
+  return opts.branches.map((branch) => {
+    const rs = repairs.filter((r) => r.workshopBranch === branch);
+    const presupuestos = rs.filter((r) => firstStatusTs(r, "quoted", opts.range)).length;
+    const aprobados = rs.filter((r) => inRange(budgetApprovedAt(r) ?? NaN)).length;
+    const ex = express.filter((e) => e.localKey === branch && inRange(e.ts));
+    const ready = rs.filter((r) => r.status === "ready");
+    return {
+      branch,
+      recepciones: rs.filter((r) => inRange(logTs(r.receptionDate))).length,
+      presupuestos,
+      aprobados,
+      tasaAprobacion: presupuestos > 0 ? Math.min(1, aprobados / presupuestos) : null,
+      entregas: rs.filter((r) => r.status === "delivered" && inRange(logTs(r.deliveredAt || ""))).length,
+      cancelaciones: rs.filter((r) => r.status === "cancelled" && (inRange(logTs((r as any).cancelledAt)) || firstStatusTs(r, "cancelled", opts.range))).length,
+      expressCount: ex.length,
+      expressTotal: ex.reduce((s, e) => s + (Number(e.total) || 0), 0),
+      avisosRecojo: rs.reduce((s, r) => s + (r.pickupNotices || []).filter((n) => inRange(logTs(n.at))).length, 0),
+      listosSinAviso: ready.filter((r) => (r.pickupNotices || []).length === 0).length,
+      listosConAlmacenaje: ready.filter((r) => pickupStatus(r, now).storageDays > 0).length
+    };
+  });
+}
+
 export function buildTechnicianStats(
   repairs: RepairItem[],
   express: Array<{ technicianName?: string; localKey?: string; ts: number }>,
@@ -108,7 +247,9 @@ export function buildTechnicianStats(
         terminadas: 0,
         express: 0,
         netMs: 0,
-        conCronometro: 0
+        conCronometro: 0,
+        retrabajos: 0,
+        sospechosos: 0
       };
       agg.set(key, stat);
     }
@@ -124,7 +265,9 @@ export function buildTechnicianStats(
     if (hasRegisteredWorkTime(r.workLog)) {
       stat.conCronometro++;
       stat.netMs += computeNetWorkMs(r.workLog, now, workClosedAt(r));
+      if (hasSuspiciousTimer(r, now)) stat.sospechosos++;
     }
+    stat.retrabajos += reworkCount(r);
   }
 
   for (const e of express) {
